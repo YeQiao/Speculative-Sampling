@@ -1,3 +1,12 @@
-% 1 short paragraph summarizing what was achieved.
-% 1 short paragraph on practical implications.
-% 1 sentence each for 2-3 concrete future directions.
+We presented SpecSSM, a speculative decoding framework that pairs a tiny 65M-parameter Mamba2 drafter with a LLaMA-3.1-8B verifier.
+By injecting verifier hidden states into the SSM's state-update pathway, our guided drafter achieves an average of 3.17 accepted tokens per speculation round across five diverse benchmarks, while being $\sim$20$\times$ smaller than the smallest comparable transformer drafter.
+We introduced activation replay as an efficient method to resynchronize the SSM's recurrent state after speculative rejection, avoiding costly full re-prefill.
+% TODO: Add CPU offloading sentence once results are available.
+
+Our analysis of rejection masking revealed a previously undocumented interaction between non-compact speculative layouts and recurrent drafters, where omitting masking inflates acceptance metrics for SSM drafters while deflating them for transformer drafters.
+
+\paragraph{Future work.}
+(1)~CPU-offloaded drafting with custom SSM kernels for memory-constrained deployment;
+(2)~scaling the guided SSM drafter to 130M--370M parameters;
+(3)~tree-structured drafting to amplify the benefit of each speculation round.
+% TODO: Add future direction on mask-aware training

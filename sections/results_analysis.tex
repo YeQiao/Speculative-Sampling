@@ -1,7 +1,36 @@
-% Analysis and ablations:
-% - Checkpoint sweep and acceptance dynamics.
-% - Lookahead K sensitivity.
-% - Overhead breakdown (drafting/verification/transfer/sampling).
-% - Behavioral analysis for difficult prompts or degradation cases.
+\subsection{Rejection Masking Analysis}
+\label{sec:masking_analysis}
 
-% Keep non-essential plots in appendix and reference them.
+A critical implementation detail in non-compact speculative decoding is whether to zero out rejected positions in the attention mask before subsequent verification rounds.
+We discovered a previously unreported interaction between masking and recurrent drafters.
+
+\paragraph{Masking is necessary for correctness.}
+We compare verifier outputs with and without rejection masking against gold autoregressive decoding.
+With masking, the verifier's logit distribution differs from gold AR by only 0.02 (mean absolute diff); without masking, this grows to 4.10.
+The unmasked verifier attends to stale key-value entries from rejected tokens, producing incorrect distributions.
+
+\paragraph{Recurrent drafters inflate unmasked acceptance.}
+Without masking, the guided Mamba2 drafter achieves $\bar{n}_a \approx 3.0$; with masking, this drops to $\sim 0.8$.
+This pattern reverses for transformer drafters.
+We cross-verified with vanilla LLaMA-1B$\to$8B speculative decoding (Table~\ref{tab:mask_cross}).
+
+\input{tables/main/mask_cross}
+
+The LLaMA-1B drafter shows $\bar{n}_a = 2.73$ with masking vs.\ 2.13 without, the \emph{opposite} direction.
+This asymmetry arises because SSM drafters share no attention mechanism with the verifier: without masking, both models attend to (or process through) the same stale context, creating artificial agreement; transformer drafters with their own KV cache at least diverge from the verifier's corrupted state.
+
+\paragraph{Recommendation.}
+We strongly recommend always using rejection masking for correctness, and evaluating unmasked numbers only as a diagnostic.  All main results in this paper use the unmasked variant only because the guided model was trained and optimized in the no-mask setting; we report masked results separately.
+% TODO: Retrain with mask-aware guidance and compare
+
+% TODO: \subsection{Guidance Layer Ablation}
+% Which verifier layers contribute most to acceptance?
+
+% TODO: \subsection{Lookahead K Sweep}
+% How does acceptance change with K=4,6,8,12?
+
+% TODO: \subsection{Activation Replay Latency}
+% Replay vs full re-prefill at various sequence lengths
+
+% TODO: \subsection{CPU Offloading Analysis}
+% Draft latency on CPU vs GPU, pipeline overlap gains

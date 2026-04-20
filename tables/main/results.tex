@@ -1,0 +1,25 @@
+\begin{table}[t]
+\centering
+\caption{Main speculative decoding results with LLaMA-3.1-8B verifier. $\bar{n}_a$: average accepted tokens per round (out of $K=8$). Throughput measured in tokens/second. All results use greedy decoding with 96 samples per dataset.}
+\label{tab:main}
+\vspace{0.5em}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+& \multicolumn{2}{c}{\textbf{Guided Mamba2-65M}} & \multicolumn{2}{c}{\textbf{Unguided Mamba2-65M}} & \multicolumn{2}{c}{\textbf{AR Baseline}} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7}
+\textbf{Dataset} & $\bar{n}_a$ & tok/s & $\bar{n}_a$ & tok/s & --- & tok/s \\
+\midrule
+UltraChat  & 2.91 & 32.3 & \multicolumn{2}{c}{\textit{TODO}} & --- & \textit{TODO} \\
+HumanEval  & 3.75 & 39.5 & \multicolumn{2}{c}{\textit{TODO}} & --- & \textit{TODO} \\
+XSum       & 2.42 & 25.7 & \multicolumn{2}{c}{\textit{TODO}} & --- & \textit{TODO} \\
+Alpaca     & 3.71 & 33.5 & \multicolumn{2}{c}{\textit{TODO}} & --- & \textit{TODO} \\
+GSM8K      & 3.07 & 32.3 & \multicolumn{2}{c}{\textit{TODO}} & --- & \textit{TODO} \\
+\midrule
+\textbf{Mean} & \textbf{3.17} & \textbf{32.7} & \multicolumn{2}{c}{\textit{TODO}} & --- & \textit{TODO} \\
+\bottomrule
+\end{tabular}
+% TODO: Fill in Unguided baseline (run eval.py --baseline)
+% TODO: Fill in AR baseline throughput
+% TODO: Add LLaMA-1B and LLaMA-3B drafter rows
+% TODO: Add wall-clock speedup column
+\end{table}

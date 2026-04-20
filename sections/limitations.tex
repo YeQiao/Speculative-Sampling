@@ -1,6 +1,16 @@
-% Cover limitations explicitly:
-% - Scope limits (models, datasets, prompt domains).
-% - Cases with weak gains or instability.
-% - Engineering assumptions and portability limits.
-% - Compute/energy considerations.
-% - Broader impact and misuse considerations for accelerated generation.
+\paragraph{Model scope.}
+We evaluate only one verifier (LLaMA-3.1-8B) and one drafter size (Mamba2-65M).  Generalization to other verifier families (e.g., Mistral, Qwen) and larger SSM drafters remains to be validated.
+
+\paragraph{Training regime.}
+The guided drafter was trained with knowledge distillation from the verifier on the FineWeb-Edu distribution.  Domain shift between pretraining data and evaluation benchmarks may affect acceptance rates.
+% TODO: Evaluate on out-of-distribution data.
+
+\paragraph{Masked vs.\ unmasked evaluation.}
+Our main results use unmasked evaluation because the checkpoint was trained in this setting.  While we show this inflates acceptance for SSM drafters, mask-aware retraining may close the gap.
+
+\paragraph{Systems evaluation.}
+We report acceptance rates and throughput but have not yet completed comprehensive wall-clock speedup measurements or CPU offloading experiments.
+% TODO: Update once systems experiments are done.
+
+\paragraph{Broader impact.}
+Speculative decoding accelerates text generation, which could amplify both beneficial and harmful uses of language models.  Our work does not introduce new capabilities beyond speed; all outputs are provably identical to the verifier's distribution.

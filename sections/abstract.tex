@@ -1,4 +1,10 @@
-% Problem: speculative decoding is fast in theory, but practical gains can collapse due to draft-target mismatch and systems overhead.
-% Gap: existing approaches typically rely on larger drafters or do not study tiny SSM drafter behavior in deployment-like settings.
-% Method: summarize SpecSSM with tiny SSM drafter and key implementation details that stabilize acceptance.
-% Result: report your strongest quantitative speedup and quality-preservation numbers here.
+Speculative decoding accelerates large language model inference by drafting candidate tokens with a fast model and verifying them in parallel with the target model.
+However, practical speedups depend critically on the drafter's speed, acceptance rate, and systems overhead.
+Existing approaches typically use transformer-based drafters that still carry quadratic attention costs, or resort to self-speculation methods that require target-model modifications.
+We present \textbf{SpecSSM}, a speculative decoding framework that uses a \emph{tiny} (65M parameter) Mamba2-based state space model as the drafter, guided by hidden-state signals extracted from the transformer verifier.
+Our approach injects verifier representations into Mamba2's state-update branch via learned linear projections, enabling the recurrent drafter to approximate the much larger verifier's distribution.
+We further propose \emph{activation replay}, an efficient method to resynchronize the SSM's recurrent state after speculative rejection without full re-prefill.
+% TODO: Add CPU offloading sentence once kernel is ready.
+% TODO: Fill in final speedup numbers.
+Across five diverse benchmarks, our guided Mamba2-65M drafter achieves an average of 3.17 accepted tokens per speculation round (out of 8) when paired with LLaMA-3.1-8B as verifier, while being $\sim$20$\times$ smaller than the smallest comparable transformer drafter.
+% TODO: Add wall-clock speedup number.

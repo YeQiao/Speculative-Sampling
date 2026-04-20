@@ -1,7 +1,18 @@
-% Organize related work by themes:
-% - Speculative decoding and verification-based acceleration.
-% - Draft model choices: distilled transformers vs lightweight alternatives.
-% - State Space Models / Mamba-style models for efficient generation.
-% - Systems perspectives on inference bottlenecks and practical speedup limits.
+\paragraph{Speculative decoding.}
+Speculative decoding was introduced independently by \citet{leviathan2023fast} and \citet{chen2023accelerating}, who showed that a small transformer drafter can accelerate a larger verifier without changing the output distribution.
+Subsequent work has explored tree-based verification~\citep{miao2024specinfer}, self-speculation from intermediate exits~\citep{zhang2024draft}, and Medusa-style parallel heads~\citep{cai2024medusa}.
+SD\textsuperscript{2}~\citep{sun2024spectr} injects verifier hidden states into the drafter via \emph{guided speculation}, achieving higher acceptance rates than unguided drafters.
 
-% End this section by positioning SpecSSM relative to the closest two or three methods.
+\paragraph{Draft model architectures.}
+Most speculative decoding systems use distilled or independently trained transformer drafters, typically 100M--1B parameters~\citep{leviathan2023fast, zhou2024distillspec}.
+Recent work has explored non-transformer drafters: \citet{choi2025mamba} demonstrated that Mamba-based SSM models achieve competitive acceptance rates as drafters despite lacking attention.
+% TODO: Add more citations once we survey EAGLE, draft\&verify, etc.
+
+\paragraph{State space models for language.}
+Mamba~\citep{gu2023mamba} introduced input-dependent selective state spaces for language modeling, achieving transformer-competitive perplexity at linear complexity.
+Mamba2~\citep{dao2024transformers} reformulated the selective scan as a structured state space duality (SSD) with multi-head structure, enabling efficient hardware-aware implementations.
+Hybrid architectures combining SSM layers with attention~\citep{lieber2024jamba} have also shown promise.
+
+\paragraph{Positioning.}
+Our work is closest to \citet{choi2025mamba} (Mamba drafter for spec dec) and SD\textsuperscript{2}~\citep{sun2024spectr} (guided speculation).  We combine both ideas---guidance injection into an SSM drafter---while additionally addressing the unique challenges of SSM cache resynchronization and proposing CPU offloading for memory-constrained deployment.
+% TODO: Add paragraph on systems/CPU inference once kernel results are available.
