@@ -1,0 +1,96 @@
+Loading tokenizer...
+Loading HF Mamba2 drafter (FP32, CPU)...
+Building CPU-optimized Mamba2 model...
+[CPUMamba2Model] Initialized 16 layers on CPU
+Loading verifier (LLaMA-8B, FP16, GPU)...
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:00,  4.54it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  4.55it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:00<00:00,  4.61it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00,  5.69it/s]
+
+======================================================================
+BENCHMARK 1: Activation Replay vs Re-prefill (CPU drafter)
+======================================================================
+Simulating: 8 drafted, 5 accepted, replay 5 tokens
+Seq lengths: [32, 64, 128, 256, 512]
+
+  seq_len=32:
+    HF re-prefill:      1577.1 ms
+    CPU re-prefill:      306.8 ms
+    Activation replay:    46.8 ms  (33.7x vs HF, 6.6x vs CPU reprefill)
+  seq_len=64:
+    HF re-prefill:      1636.5 ms
+    CPU re-prefill:      470.8 ms
+    Activation replay:    38.2 ms  (42.8x vs HF, 12.3x vs CPU reprefill)
+  seq_len=128:
+    HF re-prefill:      1746.0 ms
+    CPU re-prefill:     1021.4 ms
+    Activation replay:    40.9 ms  (42.7x vs HF, 25.0x vs CPU reprefill)
+  seq_len=256:
+    HF re-prefill:      1748.3 ms
+    CPU re-prefill:     1945.8 ms
+    Activation replay:    38.5 ms  (45.4x vs HF, 50.5x vs CPU reprefill)
+  seq_len=512:
+    HF re-prefill:      2973.4 ms
+    CPU re-prefill:     3881.9 ms
+    Activation replay:    38.7 ms  (76.8x vs HF, 100.3x vs CPU reprefill)
+/HSC/users/qiaoye/SSM_SPEC/Speculative-Sampling/spec_mamba/benchmark_cpu_offload.py:261: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(dtype=torch.float16):
+/HSC/users/qiaoye/SSM_SPEC/Speculative-Sampling/spec_mamba/benchmark_cpu_offload.py:311: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(dtype=torch.float16):
+/HSC/users/qiaoye/SSM_SPEC/Speculative-Sampling/spec_mamba/benchmark_cpu_offload.py:436: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(dtype=torch.float16):
+/HSC/users/qiaoye/SSM_SPEC/Speculative-Sampling/spec_mamba/benchmark_cpu_offload.py:445: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(dtype=torch.float16):
+
+======================================================================
+BENCHMARK 2: Single-Step Latency (CPU)
+======================================================================
+  HF Mamba2 (CPU):        7.93 ms/step
+  CPU-optimized model:    7.53 ms/step
+  Speedup:                1.05x
+
+======================================================================
+BENCHMARK 3: CPU-Offloaded Spec Dec Wallclock
+======================================================================
+Pipeline: CPU drafter (K=8) → transfer → GPU verifier → compare
+
+  Component breakdown (avg over 10 rounds):
+    CPU Draft (8 tokens):     64.10 ms  (79.9%)
+    Transfer → GPU:          0.123 ms
+    GPU Verify (8+1 tok):    15.84 ms  (19.7%)
+    Transfer ← CPU:          0.110 ms
+    Total round:             80.24 ms
+    If n_accepted=1: ~23 tok/s (2 tokens in 88.3ms)
+    If n_accepted=3: ~38 tok/s (4 tokens in 104.3ms)
+    If n_accepted=5: ~50 tok/s (6 tokens in 120.3ms)
+    If n_accepted=8: ~62 tok/s (9 tokens in 144.3ms)
+
+======================================================================
+BENCHMARK 4: Pipeline Overlap Potential
+======================================================================
+  K= 4: CPU draft=  30.5ms, GPU verify=  15.1ms  → overlap: NO (draft slower)
+  K= 6: CPU draft=  45.8ms, GPU verify=  14.8ms  → overlap: NO (draft slower)
+  K= 8: CPU draft=  61.0ms, GPU verify=  14.8ms  → overlap: NO (draft slower)
+  K=12: CPU draft=  91.9ms, GPU verify=  15.2ms  → overlap: NO (draft slower)
+
+
+All results saved to spec_mamba/benchmark_cpu_offload_results.json
+
+======================================================================
+SUMMARY
+======================================================================
+
+Activation Replay Speedup (vs HF re-prefill):
+  seq_len=   32: replay=46.8ms vs HF=1577.1ms → 33.7x
+  seq_len=   64: replay=38.2ms vs HF=1636.5ms → 42.8x
+  seq_len=  128: replay=40.9ms vs HF=1746.0ms → 42.7x
+  seq_len=  256: replay=38.5ms vs HF=1748.3ms → 45.4x
+  seq_len=  512: replay=38.7ms vs HF=2973.4ms → 76.8x
+
+Single-step: CPU-optimized=7.53ms vs HF=7.93ms → 1.05x
+
+CPU-offloaded round: draft=64.1ms + verify=15.8ms = 80.2ms total
+
+Pipeline overlap feasibility:
+  K=4: CPU draft=30.5ms, GPU verify=15.1ms → ✗ draft bottleneck
+  K=6: CPU draft=45.8ms, GPU verify=14.8ms → ✗ draft bottleneck
+  K=8: CPU draft=61.0ms, GPU verify=14.8ms → ✗ draft bottleneck
+  K=12: CPU draft=91.9ms, GPU verify=15.2ms → ✗ draft bottleneck

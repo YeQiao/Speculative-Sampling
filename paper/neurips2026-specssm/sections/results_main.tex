@@ -1,0 +1,18 @@
+Table~\ref{tab:main} presents the main speculative decoding results across five benchmarks.
+
+\input{tables/main/results}
+
+\paragraph{Guided Mamba2-65M achieves strong acceptance.}
+Our guided drafter achieves an average of 3.17 accepted tokens per round across all benchmarks, with per-dataset acceptance ranging from 2.42 (XSum) to 3.75 (HumanEval).
+Code generation (HumanEval) and instruction-following (Alpaca) yield the highest acceptance, likely because their token distributions are more predictable.
+Summarization (XSum) is hardest, consistent with its requirement for creative paraphrasing.
+
+% TODO: Add unguided baseline row to table once W1 is done
+% TODO: Add wall-clock speedup numbers once W5 is done
+% TODO: Compare against LLaMA-1B and LLaMA-3B transformer drafters
+
+\paragraph{Throughput.}
+The guided Mamba2-65M drafter achieves throughput between 25.7--39.5 tok/s across benchmarks, compared to an estimated AR baseline of $\sim$17 tok/s for LLaMA-3.1-8B alone.
+% TODO: Measure exact AR baseline throughput and compute speedup ratios
+
+% TODO: Add activation replay comparison once implemented

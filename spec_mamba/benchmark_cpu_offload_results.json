@@ -1,0 +1,75 @@
+{
+  "replay_vs_reprefill": {
+    "32": {
+      "hf_reprefill_ms": 1577.06,
+      "cpu_reprefill_ms": 306.79,
+      "replay_ms": 46.77,
+      "speedup_vs_hf_reprefill": 33.7,
+      "speedup_vs_cpu_reprefill": 6.6
+    },
+    "64": {
+      "hf_reprefill_ms": 1636.5,
+      "cpu_reprefill_ms": 470.8,
+      "replay_ms": 38.24,
+      "speedup_vs_hf_reprefill": 42.8,
+      "speedup_vs_cpu_reprefill": 12.3
+    },
+    "128": {
+      "hf_reprefill_ms": 1745.96,
+      "cpu_reprefill_ms": 1021.44,
+      "replay_ms": 40.86,
+      "speedup_vs_hf_reprefill": 42.7,
+      "speedup_vs_cpu_reprefill": 25.0
+    },
+    "256": {
+      "hf_reprefill_ms": 1748.29,
+      "cpu_reprefill_ms": 1945.82,
+      "replay_ms": 38.51,
+      "speedup_vs_hf_reprefill": 45.4,
+      "speedup_vs_cpu_reprefill": 50.5
+    },
+    "512": {
+      "hf_reprefill_ms": 2973.45,
+      "cpu_reprefill_ms": 3881.85,
+      "replay_ms": 38.71,
+      "speedup_vs_hf_reprefill": 76.8,
+      "speedup_vs_cpu_reprefill": 100.3
+    }
+  },
+  "single_step": {
+    "hf_cpu_ms": 7.93,
+    "cpu_optimized_ms": 7.53,
+    "speedup": 1.05
+  },
+  "cpu_offloaded_spec_dec": {
+    "draft_cpu_ms": 64.1,
+    "transfer_to_gpu_ms": 0.123,
+    "verify_gpu_ms": 15.84,
+    "transfer_back_ms": 0.11,
+    "total_round_ms": 80.24,
+    "draft_fraction": 0.799,
+    "verify_fraction": 0.197
+  },
+  "overlap_potential": {
+    "4": {
+      "cpu_draft_ms": 30.53,
+      "gpu_verify_ms": 15.05,
+      "draft_hidden_by_verify": false
+    },
+    "6": {
+      "cpu_draft_ms": 45.77,
+      "gpu_verify_ms": 14.82,
+      "draft_hidden_by_verify": false
+    },
+    "8": {
+      "cpu_draft_ms": 60.99,
+      "gpu_verify_ms": 14.82,
+      "draft_hidden_by_verify": false
+    },
+    "12": {
+      "cpu_draft_ms": 91.9,
+      "gpu_verify_ms": 15.17,
+      "draft_hidden_by_verify": false
+    }
+  }
+}

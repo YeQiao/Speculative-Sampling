@@ -1,0 +1,23 @@
+Autoregressive decoding in large language models (LLMs) is inherently sequential: each token depends on all previous tokens, making generation latency proportional to sequence length regardless of available compute.
+For interactive applications---chatbots, code assistants, real-time translation---this latency directly impacts user experience.
+Speculative decoding~\citep{leviathan2023fast,chen2023accelerating} offers an elegant solution: a small, fast \emph{drafter} model proposes $K$ candidate tokens in parallel, and the large \emph{verifier} checks them in a single forward pass, accepting a prefix of correct tokens and resampling from the first disagreement.
+
+The effectiveness of speculative decoding hinges on a tension: the drafter must be fast enough that its overhead is small relative to the verifier, yet accurate enough to maintain high acceptance rates.
+Transformer-based drafters, even small ones, retain quadratic attention complexity and substantial KV-cache memory.
+Recent work~\citep{choi2025mamba} has shown that Mamba-based state space models (SSMs) are attractive drafters due to their linear-time generation, constant memory per token, and surprisingly strong acceptance rates even at small scales.
+However, vanilla SSM drafters lack any mechanism to align with a specific verifier's distribution.
+
+We observe that the verifier's intermediate hidden states contain rich information about its next-token preferences.
+Inspired by guided speculative decoding~\citep{sun2024spectr}, we propose \textbf{SpecSSM}, which extracts hidden representations from three verifier layers (early, middle, late) and injects them as additive biases into Mamba2's state-update (\texttt{x}-branch) pathway.
+This \emph{guidance injection} steers the recurrent drafter toward the verifier's distribution at minimal cost.
+A unique challenge for SSM drafters is \emph{cache resynchronization}: unlike transformers whose KV-cache can be truncated after rejection, Mamba2's recurrent hidden state has no efficient rollback mechanism.
+We address this with \emph{activation replay}, which reconstructs the correct state by replaying only accepted tokens through the recurrent dynamics.
+% TODO: Add CPU offloading paragraph once kernel is implemented.
+
+Our contributions are:
+\begin{enumerate}
+    \item We propose a \textbf{guided SSM drafter} architecture that injects verifier hidden states into Mamba2's state-update branch, improving acceptance over unguided baselines. % TODO: add delta number
+    \item We introduce \textbf{activation replay}, an efficient SSM state resynchronization method that avoids costly full re-prefill after speculative rejection. % TODO: add speedup
+    \item We provide a \textbf{comprehensive evaluation} across five benchmarks with LLaMA-3.1-8B as verifier, including analysis of a previously unreported interaction between non-compact speculative decoding layouts and recurrent drafters that inflates acceptance metrics.
+    % TODO: \item CPU offloading contribution
+\end{enumerate}

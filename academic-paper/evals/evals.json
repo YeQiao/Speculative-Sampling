@@ -1,0 +1,35 @@
+{
+  "skill_name": "academic-paper",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I want to write a paper about using graph neural networks for molecular property prediction. Target venue is NeurIPS.",
+      "expected_output": "A complete project scaffold with main.tex, sections/*.tex skeleton files, references.bib, Makefile, and a coherent outline for a GNN molecular property prediction paper.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Write the introduction section for my paper. The core contribution is a novel message-passing scheme that captures long-range molecular interactions.",
+      "expected_output": "A well-structured introduction.tex following the funnel pattern: broad context -> specific problem -> limitations -> contributions -> paper organization. Should use proper LaTeX commands and cross-references.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Generate a bar chart comparing the accuracy of 4 methods: GCN (78.2), GAT (80.1), GIN (82.5), and our method (86.3) on the OGBG-MolHIV dataset.",
+      "expected_output": "A Python script in scripts/ that generates a publication-quality bar chart saved as PDF in figures/. Plus a LaTeX figure block ready to insert.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Compile my paper to PDF. I'm getting an error: Missing character: There is no ö in font.",
+      "expected_output": "Diagnose the Unicode issue, recommend switching from pdflatex to xelatex, show how to update the Makefile, and recompile.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "Add a citation for 'Attention Is All You Need' by Vaswani et al. 2017, and cite it in the introduction where I mention transformer architectures.",
+      "expected_output": "A properly formatted BibTeX entry appended to references.bib with key vaswani2017attention, and a \\citet or \\citep command inserted at the right location in the introduction.",
+      "files": []
+    }
+  ]
+}

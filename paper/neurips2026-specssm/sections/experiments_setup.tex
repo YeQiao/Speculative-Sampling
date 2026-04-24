@@ -1,0 +1,35 @@
+\paragraph{Models.}
+Our verifier is LLaMA 3.1-8B~\citep{dubey2024llama} (32 layers, 4096 hidden dimension, 32 attention heads).
+The drafter is Mamba2-65M (16 layers, 512 hidden, expand factor 2), first pretrained on FineWeb-Edu~\citep{penedo2024finewebedu} and then knowledge-distilled with TVD loss using the verifier as teacher.
+Both models share the same tokenizer (vocabulary size 128,256).
+% TODO: Add pretraining details (tokens seen, steps, etc.)
+
+\paragraph{Baselines.}
+We compare against:
+\begin{itemize}
+  \item \textbf{Autoregressive (AR)}: Standard greedy decoding with the verifier alone.
+  \item \textbf{Unguided Mamba2-65M}: Same drafter architecture with guidance weights zeroed out.
+  % TODO: \item \textbf{LLaMA-3.2-1B drafter}: Transformer-based speculative decoding baseline.
+  % TODO: \item \textbf{LLaMA-3.2-3B drafter}: Larger transformer drafter.
+\end{itemize}
+
+\paragraph{Benchmarks.}
+We evaluate on five diverse benchmarks: UltraChat~\citep{ding2023ultrachat} (multi-turn dialogue), HumanEval~\citep{chen2021codex} (code generation), XSum~\citep{narayan2018xsum} (summarization), Alpaca~\citep{taori2023alpaca} (instruction following), and GSM8K~\citep{cobbe2021gsm8k} (math reasoning).
+Each benchmark is evaluated with 96 samples using greedy decoding ($T=0$).
+
+\paragraph{Metrics.}
+We report:
+(i)~\textbf{Average accepted tokens} ($\bar{n}_a$): mean number of draft tokens accepted per speculation round (out of $K=8$);
+(ii)~\textbf{Throughput} (tok/s): end-to-end tokens generated per second;
+% TODO: (iii) Wall-clock speedup over AR baseline
+(iii)~\textbf{Text quality}: we verify output matches gold AR via cross-entropy comparison.
+
+\paragraph{Hardware.}
+All experiments run on a single NVIDIA A100-80GB GPU.
+% TODO: Add CPU specs for offloading experiments.
+
+\paragraph{Hyperparameters.}
+Speculation lookahead $K=8$, non-compact layout, greedy verification.
+Guidance layers: $\ell = \{5, 16, 29\}$ (early, middle, late verifier layers).
+Guidance injection: x-branch only (\texttt{steer\_z=False}).
+% TODO: Add training hyperparams (lr, schedule, epochs)

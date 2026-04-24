@@ -160,4 +160,15 @@ cython_debug/
 #.idea/
 
 pythia*
+
+# ── Project-specific ──────────────────────────────────
+.backup_redundant/
+.vscode/
+outputs/
+lightning_logs/
+wandb/
+*.ckpt
+*.safetensors
+*.bin
+!requirements*.txt
 opt*

@@ -1,0 +1,72 @@
+Loading tokenizer...
+Loading verifier (LLaMA 8B) from /HSC/users/qiaoye/checkpoints/Llama3.1-8B-hf...
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:00,  3.92it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  4.08it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:00<00:00,  4.07it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00,  5.01it/s]
+Loading drafter from /HSC/users/qiaoye/checkpoints/Llama-3.2-1B...
+
+Measuring AR baseline throughput...
+  ultrachat: AR throughput = 81.6 tok/s
+  humaneval: AR throughput = 81.5 tok/s
+  xsum: AR throughput = 81.2 tok/s
+  alpaca: AR throughput = 81.9 tok/s
+  gsm8k: AR throughput = 81.7 tok/s
+
+============================================================
+LLaMA drafter eval: Llama-3.2-1B → LLaMA-8B (NG=8)
+Masking: True, Samples: 96, tgt_len=128
+============================================================
+
+  Dataset: ultrachat
+    [16/96] accepted: 2.732, throughput: 56.3 tok/s
+    [32/96] accepted: 2.734, throughput: 55.4 tok/s
+    [48/96] accepted: 2.836, throughput: 58.8 tok/s
+    [64/96] accepted: 2.808, throughput: 59.0 tok/s
+    [80/96] accepted: 2.818, throughput: 60.4 tok/s
+    [96/96] accepted: 2.727, throughput: 59.0 tok/s
+    RESULT: accepted=2.727, block_eff=3.727, throughput=59.0 tok/s, speedup=0.72x
+
+  Dataset: humaneval
+    [16/96] accepted: 4.726, throughput: 77.0 tok/s
+    [32/96] accepted: 4.987, throughput: 82.7 tok/s
+    [48/96] accepted: 5.047, throughput: 86.5 tok/s
+    [64/96] accepted: 5.102, throughput: 87.2 tok/s
+    [80/96] accepted: 4.941, throughput: 84.9 tok/s
+    [96/96] accepted: 4.881, throughput: 83.7 tok/s
+    RESULT: accepted=4.881, block_eff=5.881, throughput=83.7 tok/s, speedup=1.03x
+
+  Dataset: xsum
+    [16/96] accepted: 2.095, throughput: 52.4 tok/s
+    [32/96] accepted: 2.234, throughput: 57.3 tok/s
+    [48/96] accepted: 2.357, throughput: 59.0 tok/s
+    [64/96] accepted: 2.299, throughput: 55.9 tok/s
+    [80/96] accepted: 2.421, throughput: 57.4 tok/s
+    [96/96] accepted: 2.390, throughput: 56.4 tok/s
+    RESULT: accepted=2.390, block_eff=3.390, throughput=56.4 tok/s, speedup=0.69x
+
+  Dataset: alpaca
+    [16/96] accepted: 4.072, throughput: 65.9 tok/s
+    [32/96] accepted: 4.027, throughput: 67.4 tok/s
+    [48/96] accepted: 4.250, throughput: 69.4 tok/s
+    [64/96] accepted: 4.299, throughput: 69.5 tok/s
+    [80/96] accepted: 4.361, throughput: 69.2 tok/s
+    [96/96] accepted: 4.351, throughput: 69.3 tok/s
+    RESULT: accepted=4.351, block_eff=5.351, throughput=69.3 tok/s, speedup=0.85x
+
+  Dataset: gsm8k
+    [16/96] accepted: 1.686, throughput: 68.5 tok/s
+    [32/96] accepted: 2.589, throughput: 69.3 tok/s
+    [48/96] accepted: 2.425, throughput: 71.4 tok/s
+    [64/96] accepted: 2.544, throughput: 69.3 tok/s
+    [80/96] accepted: 2.473, throughput: 68.7 tok/s
+    [96/96] accepted: 2.604, throughput: 70.7 tok/s
+    RESULT: accepted=2.604, block_eff=3.604, throughput=70.7 tok/s, speedup=0.87x
+
+Results saved to spec_mamba/eval_results_llama1b_mask.json
+
+============================================================
+Summary:
+============================================================
+  Llama-3.2-1B-mask-greedy-ultrachat: block_eff=3.727, accepted=2.727, throughput=59.0, speedup=0.72x
+  Llama-3.2-1B-mask-greedy-humaneval: block_eff=5.881, accepted=4.881, throughput=83.7, speedup=1.03x
+  Llama-3.2-1B-mask-greedy-xsum: block_eff=3.390, accepted=2.390, throughput=56.4, speedup=0.69x
+  Llama-3.2-1B-mask-greedy-alpaca: block_eff=5.351, accepted=4.351, throughput=69.3, speedup=0.85x
+  Llama-3.2-1B-mask-greedy-gsm8k: block_eff=3.604, accepted=2.604, throughput=70.7, speedup=0.87x

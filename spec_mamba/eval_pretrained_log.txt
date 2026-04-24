@@ -1,0 +1,41 @@
+============================================================
+Loading pretrained drafter from: /HSC/users/qiaoye/SSM_SPEC/checkpoints/custom-mamba-65m-multi-gpu
+============================================================
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:00,  4.36it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  4.35it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:00<00:00,  4.39it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00,  5.42it/s]
+
+  Measuring AR baseline throughput (verifier-only)...
+    ultrachat: AR throughput = 77.8 tok/s (6144 tokens in 79.0s)
+    humaneval: AR throughput = 77.5 tok/s (6144 tokens in 79.2s)
+    xsum: AR throughput = 76.9 tok/s (6144 tokens in 79.9s)
+    alpaca: AR throughput = 78.0 tok/s (6144 tokens in 78.8s)
+    gsm8k: AR throughput = 77.7 tok/s (6144 tokens in 79.1s)
+
+  Sampling mode: greedy
+    Dataset: ultrachat
+      avg accepted: 2.826, block_eff: 3.826, throughput: 37.9 tok/s, speedup=0.49x
+    Dataset: humaneval
+      avg accepted: 3.142, block_eff: 4.142, throughput: 40.9 tok/s, speedup=0.53x
+    Dataset: xsum
+      avg accepted: 2.511, block_eff: 3.511, throughput: 34.3 tok/s, speedup=0.45x
+    Dataset: alpaca
+      avg accepted: 3.811, block_eff: 4.811, throughput: 47.6 tok/s, speedup=0.61x
+    Dataset: gsm8k
+      avg accepted: 2.997, block_eff: 3.997, throughput: 39.5 tok/s, speedup=0.51x
+
+Results saved to spec_mamba/eval_results_pretrained_mamba65m.json
+
+============================================================
+Summary:
+============================================================
+  AR baseline throughput:
+    ultrachat: 77.8 tok/s
+    humaneval: 77.5 tok/s
+    xsum: 76.9 tok/s
+    alpaca: 78.0 tok/s
+    gsm8k: 77.7 tok/s
+
+  pretrained-greedy-ultrachat: block_eff=3.826, accepted=2.826, throughput=37.9, speedup=0.49x
+  pretrained-greedy-humaneval: block_eff=4.142, accepted=3.142, throughput=40.9, speedup=0.53x
+  pretrained-greedy-xsum: block_eff=3.511, accepted=2.511, throughput=34.3, speedup=0.45x
+  pretrained-greedy-alpaca: block_eff=4.811, accepted=3.811, throughput=47.6, speedup=0.61x
+  pretrained-greedy-gsm8k: block_eff=3.997, accepted=2.997, throughput=39.5, speedup=0.51x

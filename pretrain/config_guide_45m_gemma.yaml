@@ -1,0 +1,53 @@
+# Guidance training config for Mamba2-45M drafter with Gemma-4-E4B verifier
+#
+# Gemma-4-E4B: hidden=2560, 42 layers, global attn at [5,11,17,23,29,35,41]
+# We pick layer 35 (~83rd percentile) — mirrors layer 29 of 32 in LLaMA
+#
+# Usage:
+#   python -m guided_mamba.run fit --config pretrain/config_guide_45m_gemma.yaml
+
+seed_everything: 0
+trainer:
+  accelerator: auto
+  strategy: auto
+  devices: auto
+  precision: bf16-mixed
+  max_epochs: 10
+  gradient_clip_val: 0.5
+  log_every_n_steps: 20
+  enable_progress_bar: true
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1
+  default_root_dir: "/HSC/users/qiaoye/SSM_SPEC/checkpoints/mamba2-45m-gemma-guided"
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "/HSC/users/qiaoye/SSM_SPEC/checkpoints/mamba2-45m-gemma-guided/ckpts"
+        filename: "step-{step}-val_loss-{val/loss:.4f}"
+        monitor: "val/loss"
+        mode: "min"
+        save_top_k: 3
+        every_n_epochs: 1
+        save_last: true
+
+model:
+  verifier: "google/gemma-4-E4B-it"
+  drafter: "/HSC/users/qiaoye/SSM_SPEC/checkpoints/mamba2-45m-gemma-kd/final"
+  # Layer 35 = global attention layer at ~83rd percentile of 42 layers
+  v_layers: [35]
+  steer_z: false
+  d_layers: "all"
+  ngram: 8
+  pos_method: "regular"
+  loss_method: "tvd"
+  finetune_drafter: true
+  lr_start: 3e-4
+  lr_end: 3e-5
+  warmup_steps: 30
+  n_spec_dec_batches: 4
+  tgt_len: 64
+  greedy_sample: false
+
+data:
+  path: "/HSC/users/qiaoye/SSM_SPEC/data/ultrachat_guided_gemma"
+  bsz: 8

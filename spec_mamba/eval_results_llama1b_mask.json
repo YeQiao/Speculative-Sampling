@@ -1,0 +1,49 @@
+{
+  "ar_baseline": {
+    "ultrachat": 81.56304448494346,
+    "humaneval": 81.45924134960991,
+    "xsum": 81.23160001515326,
+    "alpaca": 81.92618301871951,
+    "gsm8k": 81.73833967062453
+  },
+  "Llama-3.2-1B-mask-greedy-ultrachat": {
+    "avg_n_accepted": 2.7272195295840356,
+    "block_efficiency": 3.7272195295840356,
+    "avg_throughput": 59.0070025313911,
+    "n_samples": 96,
+    "ar_throughput": 81.56304448494346,
+    "speedup": 0.723452672763874
+  },
+  "Llama-3.2-1B-mask-greedy-humaneval": {
+    "avg_n_accepted": 4.880790437158541,
+    "block_efficiency": 5.880790437158541,
+    "avg_throughput": 83.73205770137099,
+    "n_samples": 96,
+    "ar_throughput": 81.45924134960991,
+    "speedup": 1.0279012707963546
+  },
+  "Llama-3.2-1B-mask-greedy-xsum": {
+    "avg_n_accepted": 2.389533390141473,
+    "block_efficiency": 3.389533390141473,
+    "avg_throughput": 56.37956128244365,
+    "n_samples": 96,
+    "ar_throughput": 81.23160001515326,
+    "speedup": 0.6940594703529955
+  },
+  "Llama-3.2-1B-mask-greedy-alpaca": {
+    "avg_n_accepted": 4.350703961234891,
+    "block_efficiency": 5.350703961234891,
+    "avg_throughput": 69.30277514790325,
+    "n_samples": 96,
+    "ar_throughput": 81.92618301871951,
+    "speedup": 0.8459172952323202
+  },
+  "Llama-3.2-1B-mask-greedy-gsm8k": {
+    "avg_n_accepted": 2.603728479962038,
+    "block_efficiency": 3.603728479962038,
+    "avg_throughput": 70.71727538872774,
+    "n_samples": 96,
+    "ar_throughput": 81.73833967062453,
+    "speedup": 0.8651665261821121
+  }
+}

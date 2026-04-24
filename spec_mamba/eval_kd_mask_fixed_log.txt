@@ -1,0 +1,63 @@
+============================================================
+Loading guided model from: /HSC/users/qiaoye/SSM_SPEC/checkpoints/guided_mamba/ckpts/last.ckpt
+============================================================
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:00,  4.52it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  4.61it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:00<00:00,  4.67it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00,  5.76it/s]
+
+  Measuring AR baseline throughput (verifier-only)...
+    ultrachat: AR throughput = 74.8 tok/s (6144 tokens in 82.1s)
+    humaneval: AR throughput = 74.8 tok/s (6144 tokens in 82.2s)
+    xsum: AR throughput = 74.3 tok/s (6144 tokens in 82.7s)
+    alpaca: AR throughput = 75.4 tok/s (6144 tokens in 81.4s)
+    gsm8k: AR throughput = 75.3 tok/s (6144 tokens in 81.6s)
+
+  Sampling mode: greedy
+    Dataset: ultrachat
+      avg accepted: 2.197, block_eff: 3.197, throughput: 31.0 tok/s, speedup=0.41x
+    Dataset: humaneval
+      avg accepted: 2.070, block_eff: 3.070, throughput: 29.7 tok/s, speedup=0.40x
+    Dataset: xsum
+      avg accepted: 1.721, block_eff: 2.721, throughput: 26.2 tok/s, speedup=0.35x
+    Dataset: alpaca
+      avg accepted: 2.745, block_eff: 3.745, throughput: 36.4 tok/s, speedup=0.48x
+    Dataset: gsm8k
+      avg accepted: 2.907, block_eff: 3.907, throughput: 37.9 tok/s, speedup=0.50x
+
+============================================================
+Loading unguided baseline...
+============================================================
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:00,  4.59it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  4.67it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:00<00:00,  4.69it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00,  5.79it/s]
+
+  Sampling mode: greedy
+    Dataset: ultrachat
+      avg accepted: 1.629, block_eff: 2.629, throughput: 25.2 tok/s, speedup=0.34x
+    Dataset: humaneval
+      avg accepted: 1.437, block_eff: 2.437, throughput: 23.3 tok/s, speedup=0.31x
+    Dataset: xsum
+      avg accepted: 0.973, block_eff: 1.973, throughput: 18.7 tok/s, speedup=0.25x
+    Dataset: alpaca
+      avg accepted: 2.417, block_eff: 3.417, throughput: 32.8 tok/s, speedup=0.43x
+    Dataset: gsm8k
+      avg accepted: 1.828, block_eff: 2.828, throughput: 27.1 tok/s, speedup=0.36x
+
+Results saved to spec_mamba/eval_results_kd_mask_fixed.json
+
+============================================================
+Summary:
+============================================================
+  AR baseline throughput:
+    ultrachat: 74.8 tok/s
+    humaneval: 74.8 tok/s
+    xsum: 74.3 tok/s
+    alpaca: 75.4 tok/s
+    gsm8k: 75.3 tok/s
+
+  guided-greedy-ultrachat: block_eff=3.197, accepted=2.197, throughput=31.0, speedup=0.41x
+  guided-greedy-humaneval: block_eff=3.070, accepted=2.070, throughput=29.7, speedup=0.40x
+  guided-greedy-xsum: block_eff=2.721, accepted=1.721, throughput=26.2, speedup=0.35x
+  guided-greedy-alpaca: block_eff=3.745, accepted=2.745, throughput=36.4, speedup=0.48x
+  guided-greedy-gsm8k: block_eff=3.907, accepted=2.907, throughput=37.9, speedup=0.50x
+  baseline-greedy-ultrachat: block_eff=2.629, accepted=1.629, throughput=25.2, speedup=0.34x
+  baseline-greedy-humaneval: block_eff=2.437, accepted=1.437, throughput=23.3, speedup=0.31x
+  baseline-greedy-xsum: block_eff=1.973, accepted=0.973, throughput=18.7, speedup=0.25x
+  baseline-greedy-alpaca: block_eff=3.417, accepted=2.417, throughput=32.8, speedup=0.43x
+  baseline-greedy-gsm8k: block_eff=2.828, accepted=1.828, throughput=27.1, speedup=0.36x
