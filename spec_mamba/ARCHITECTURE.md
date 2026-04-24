@@ -233,6 +233,39 @@ This ensures RoPE embeddings reflect the true sequence position, not the physica
 - **Pretrained > KD-zeroed**: confirms guidance dependency artifact
 - Results file: `eval_results_kd_mask_fixed.json`, `eval_results_pretrained_mask_fixed.json`
 
+### Guidance Layer Sweep (masked, greedy, bsz=1, 96 samples, H100 NVL)
+
+Full sweep over 13 guidance configurations. All use Mamba2-65M drafter + LLaMA 3.1-8B verifier.
+
+| Config | v_layers | ultra | human | xsum | alpaca | gsm8k | Mean | Δ vs base |
+|--------|----------|-------|-------|------|--------|-------|------|-----------|
+| LLaMA-1B drafter | — | 2.73 | 4.88 | 2.39 | 4.35 | 2.60 | 3.391 | +83% |
+| KD+Guided [5,16,29] | [5,16,29] | 2.20 | 2.07 | 1.72 | 2.75 | 2.91 | 2.328 | +25% |
+| Pair [5,29] | [5,29] | 2.10 | 2.20 | 1.74 | 2.70 | 2.84 | 2.316 | +25% |
+| KD+z-branch | [5,16,29] | 2.12 | 2.21 | 1.73 | 2.61 | 2.85 | 2.304 | +24% |
+| Single layer 29 | [29] | 2.22 | 2.12 | 1.64 | 2.69 | 2.85 | 2.303 | +24% |
+| Pretrained+Guide+FT | [5,16,29] | 2.14 | 2.18 | 1.66 | 2.74 | 2.78 | 2.301 | +24% |
+| Pair [16,29] | [16,29] | 2.12 | 2.14 | 1.79 | 2.67 | 2.78 | 2.299 | +24% |
+| Single layer 16 | [16] | 2.14 | 2.10 | 1.72 | 2.61 | 2.90 | 2.293 | +24% |
+| Pretrained+Guide (frozen) | [5,16,29] | 2.05 | 1.63 | 1.50 | 2.29 | 2.44 | 1.981 | +7% |
+| Single layer 5 | [5] | 1.75 | 1.88 | 1.12 | 2.57 | 2.19 | 1.899 | +2% |
+| Pretrained (no guidance) | — | 1.87 | 1.49 | 1.18 | 2.64 | 2.09 | 1.855 | — |
+| KD+Zeroed | [5,16,29] | 1.63 | 1.44 | 0.97 | 2.42 | 1.83 | 1.657 | -11% |
+
+**Key Findings from Sweep:**
+
+1. **Layer selection barely matters** (when backbone is finetuned): Top configs span only 2.293–2.328 — a 1.5% spread. Single layer 29 (2.303) matches triple [5,16,29] (2.328). Even single layer 16 alone (2.293) is within noise.
+
+2. **z-branch adds nothing**: KD+z-branch (2.304) ≈ KD+Guided x-only (2.328). Doubles PrepMambaDeltas parameters for no benefit.
+
+3. **Low layers are useless alone**: Single layer 5 (1.899) barely beats unguided pretrained (1.855) — +2% vs +24% for layers 16/29. Layer 5 captures surface features that don't help speculative alignment.
+
+4. **Backbone finetuning is critical**: Frozen guidance (1.981, +7%) vs finetuned (2.301, +24%) — finetuning provides 3× the benefit of guidance projection alone.
+
+5. **KD pre-training provides marginal benefit**: KD+Guided (2.328) vs Pretrained+Guide+FT (2.301) — only +1.2% from KD initialization. The guidance training itself does almost all the work.
+
+6. **KD-zeroed confirms backbone dependency**: KD+Zeroed (1.657) is 11% worse than pretrained (1.855) — backbone was warped to depend on deltas during KD.
+
 ### LLaMA-3.2-1B Drafter (WITH mask, greedy, bsz=1, 96 samples)
 
 | Dataset | Accepted | Block Eff | Throughput | Speedup |
