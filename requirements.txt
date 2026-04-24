@@ -17,4 +17,17 @@ causal-conv1d>=1.5           # fused depthwise conv1d
 # ── Build tools (for CPU AVX-512 kernel) ────────
 ninja                        # fast C++ JIT compilation
 pybind11                     # C++ Python bindings
-setuptools                   # build extension
+setuptools                   # build extensio# 1. Create env
+
+# How to set up the environment:
+# conda create -n specssm python=3.10 -y
+# conda activate specssm
+
+# # 2. PyTorch (match your CUDA version)
+# pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+
+# # 3. Everything else
+# pip install -r requirements.txt
+
+# # 4. mamba-ssm needs torch already installed
+# pip install mamba-ssm causal-conv1d
