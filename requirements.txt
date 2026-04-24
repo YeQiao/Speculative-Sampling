@@ -1,0 +1,20 @@
+# SpecSSM — Dependencies
+# Install PyTorch first: https://pytorch.org/get-started/locally/
+#   pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+#
+# Then: pip install -r requirements.txt
+
+# ── Core ────────────────────────────────────────
+transformers>=5.6            # Gemma-4 support requires >=5.6
+datasets>=4.0
+accelerate>=1.0              # multi-GPU training
+lightning>=2.4               # guided training (LightningCLI)
+
+# ── Mamba2 fast path (optional but recommended) ─
+mamba-ssm>=2.2               # fused selective scan CUDA kernels
+causal-conv1d>=1.5           # fused depthwise conv1d
+
+# ── Build tools (for CPU AVX-512 kernel) ────────
+ninja                        # fast C++ JIT compilation
+pybind11                     # C++ Python bindings
+setuptools                   # build extension
