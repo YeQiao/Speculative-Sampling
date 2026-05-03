@@ -1,36 +1,131 @@
 \subsection{Rejection Masking Analysis}
 \label{sec:masking_analysis}
 
-A critical implementation detail in non-compact speculative decoding is whether to zero out rejected positions in the attention mask before subsequent verification rounds.
+A critical implementation detail in non-compact speculative decoding is whether rejected positions are zeroed in the attention mask before subsequent verification rounds.
 We discovered a previously unreported interaction between masking and recurrent drafters.
 
 \paragraph{Masking is necessary for correctness.}
 We compare verifier outputs with and without rejection masking against gold autoregressive decoding.
-With masking, the verifier's logit distribution differs from gold AR by only 0.02 (mean absolute diff); without masking, this grows to 4.10.
+With masking, the verifier's logit distribution differs from gold AR by only 0.02 (mean absolute diff); without masking, this divergence grows to 4.10.
 The unmasked verifier attends to stale key-value entries from rejected tokens, producing incorrect distributions.
 
-\paragraph{Recurrent drafters inflate unmasked acceptance.}
-Without masking, the guided Mamba2 drafter achieves $\bar{n}_a \approx 3.0$; with masking, this drops to $\sim 0.8$.
-This pattern reverses for transformer drafters.
-We cross-verified with vanilla LLaMA-1B$\to$8B speculative decoding (Table~\ref{tab:mask_cross}).
+\paragraph{Recurrent and transformer drafters show opposite masking effects.}
+Table~\ref{tab:mask_cross} reveals a striking asymmetry: the guided Mamba2 drafter achieves $\bar{n}_a\!=\!3.17$ without masking but only 2.33 with masking, while the LLaMA-1B transformer drafter shows the \emph{opposite} pattern (2.13 without, 2.73 with).
 
 \input{tables/main/mask_cross}
 
-The LLaMA-1B drafter shows $\bar{n}_a = 2.73$ with masking vs.\ 2.13 without, the \emph{opposite} direction.
-This asymmetry arises because SSM drafters share no attention mechanism with the verifier: without masking, both models attend to (or process through) the same stale context, creating artificial agreement; transformer drafters with their own KV cache at least diverge from the verifier's corrupted state.
+This asymmetry arises because SSM drafters share no attention mechanism with the verifier.
+Without masking, both the verifier and drafter process overlapping stale context through their respective state representations, creating artificial agreement.
+Transformer drafters, maintaining their own KV cache, diverge from the verifier's corrupted state and thus show lower acceptance without masking.
 
-\paragraph{Recommendation.}
-We strongly recommend always using rejection masking for correctness, and evaluating unmasked numbers only as a diagnostic.  All main results in this paper use the unmasked variant only because the guided model was trained and optimized in the no-mask setting; we report masked results separately.
-% TODO: Retrain with mask-aware guidance and compare
+\paragraph{The compact re-prefill bug.}
+We further identified a critical issue where rejected draft tokens were incorrectly fed through the Mamba2 recurrence during re-prefill, contaminating the drafter's hidden state.
+Fixing this bug improved masked acceptance from $\sim$0.9 to $\sim$2.2, a $2.3\times$ improvement.
+All results in this paper are reported after this correction.
 
-% TODO: \subsection{Guidance Layer Ablation}
-% Which verifier layers contribute most to acceptance?
+\subsection{Guidance Layer Ablation}
+\label{sec:layer_ablation}
 
-% TODO: \subsection{Lookahead K Sweep}
-% How does acceptance change with K=4,6,8,12?
+We ablate which verifier layers contribute most to acceptance in Table~\ref{tab:layer_ablation}.
+We evaluate nine configurations with LLaMA-8B as verifier, varying the number and position of guidance extraction layers.
 
-% TODO: \subsection{Activation Replay Latency}
-% Replay vs full re-prefill at various sequence lengths
+\begin{table}[t]
+\centering
+\caption{Guidance layer ablation (masked, greedy, LLaMA-8B verifier, Mamba2-27M drafter). All configurations with backbone finetuning show similar acceptance ($\sim$1.5\% spread), while frozen guidance underperforms.}
+\label{tab:layer_ablation}
+\vspace{0.5em}
+\begin{tabular}{@{}llc@{}}
+\toprule
+\textbf{Configuration} & \textbf{v\_layers} & \textbf{Mean $\bar{n}_a$} \\
+\midrule
+KD $\to$ guided (default)     & [5, 16, 29] & \textbf{2.33} \\
+Pair [5, 29]                   & [5, 29]     & 2.32 \\
+z-branch [5, 16, 29]          & [5, 16, 29] & 2.30 \\
+Single [29]                   & [29]        & 2.30 \\
+Pretrain $\to$ guided + ft    & [5, 16, 29] & 2.30 \\
+Pair [16, 29]                  & [16, 29]    & 2.30 \\
+Single [16]                   & [16]        & 2.29 \\
+\midrule
+Pretrain $\to$ guided (frozen) & [5, 16, 29] & 1.98 \\
+Single [5]                    & [5]         & 1.90 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-% TODO: \subsection{CPU Offloading Analysis}
-% Draft latency on CPU vs GPU, pipeline overlap gains
+\paragraph{Layer selection barely matters when the backbone is finetuned.}
+The top seven configurations span only 1.5\% in acceptance (2.29 to 2.33), indicating that the guidance signal is robust to layer choice when the backbone adapts alongside the projections.
+Even a single high layer (layer 29, acceptance 2.30) nearly matches the full three-layer configuration (2.33).
+
+\paragraph{Backbone finetuning is critical.}
+Frozen guidance with three layers achieves only 1.98, while finetuned guidance reaches 2.30, representing $3\times$ the benefit of guidance projection alone.
+This suggests that the backbone must adapt its representations to exploit guidance effectively.
+
+\paragraph{KD is not mandatory.}
+Starting from a pretrained (non-KD) backbone with finetuning achieves 2.30, nearly matching the KD-initialized variant (2.33).
+This simplifies the training pipeline for practitioners who may not have access to a distillation setup.
+
+\paragraph{z-branch gating adds no benefit.}
+Injecting guidance into the gating pathway (z-branch) alongside the x-branch yields 2.30, no better than x-branch alone (2.33).
+The state-update pathway is sufficient for guidance injection.
+
+\subsection{Activation Replay Latency}
+\label{sec:replay_results}
+
+Table~\ref{tab:replay} compares activation replay against full re-prefill at various context lengths on CPU (Intel Xeon 8562Y+).
+
+\begin{table}[t]
+\centering
+\caption{Activation replay vs.\ full re-prefill latency on CPU for Mamba2-27M. Replay is $O(K)$ in accepted tokens while re-prefill is $O(T)$ in context length.}
+\label{tab:replay}
+\vspace{0.5em}
+\begin{tabular}{@{}rccc@{}}
+\toprule
+\textbf{Context length} & \textbf{Re-prefill (ms)} & \textbf{Replay (ms)} & \textbf{Speedup} \\
+\midrule
+32    & 299   & 47 & $6.4\times$ \\
+128   & 1,019 & 37 & $27.7\times$ \\
+512   & 3,644 & 36 & $100.9\times$ \\
+1,024 & 8,036 & 40 & $201.0\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Re-prefill is sequential on CPU, costing $\sim$7\,ms per token $\times$ $T$ tokens.
+Replay processes only the $\sim$5 accepted tokens, remaining roughly constant at $\sim$37\,ms regardless of context length.
+At 1024 tokens, this yields a $201\times$ speedup, making activation replay essential for CPU-offloaded deployment.
+
+On GPU, the benefit is less clear: the Mamba2-27M model is small enough that re-prefill completes in $\sim$16\,ms via parallel scan regardless of context, while sequential replay takes $\sim$40\,ms (5 kernel launches).
+Activation replay is therefore a CPU-specific optimization in our setting.
+
+\subsection{CPU Offloading Analysis}
+\label{sec:cpu_results}
+
+Table~\ref{tab:cpu_kernel} summarizes the CPU kernel optimization stack.
+
+\begin{table}[t]
+\centering
+\caption{CPU inference optimization stack for Mamba2-27M (8-token draft, Intel Xeon 8562Y+ with AVX-512 VNNI).}
+\label{tab:cpu_kernel}
+\vspace{0.5em}
+\begin{tabular}{@{}lrrc@{}}
+\toprule
+\textbf{Engine} & \textbf{8-tok draft} & \textbf{Throughput} & \textbf{vs.\ HF} \\
+\midrule
+HuggingFace PyTorch (8 threads)  & 79\,ms & 110\,tok/s & $1.0\times$ \\
+AVX-512 FP32 SSM kernel          & 57\,ms & 123\,tok/s & $1.1\times$ \\
+Fused BF16 (full fwd + LM head)  & 32\,ms & 340\,tok/s & $2.8\times$ \\
+INT8 VNNI (fused)                 & 9\,ms  & 924\,tok/s & $\mathbf{7.5\times}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Bottleneck analysis.}
+Profiling reveals that the SSM selective scan accounts for only 10\% of per-layer latency; linear projections (in\_proj and out\_proj) dominate at 85\%.
+This motivates our focus on fused BF16 and INT8 linear layers rather than SSM kernel optimization alone.
+The AVX-512 SSM kernel achieves $4\times$ speedup over PyTorch for the scan operation, but the end-to-end gain is only $1.1\times$ because linear layers remain the bottleneck.
+
+\paragraph{Pipeline overlap.}
+With the INT8 kernel, 8-token draft latency (9\,ms at 16 threads) is strictly less than the LLaMA-8B verification time ($\sim$16\,ms on H100 NVL).
+In the asynchronous pipeline, the GPU is the bottleneck: while it verifies one batch, the CPU has already completed the next draft.
+With mean acceptance $\bar{n}_a\!=\!2.33$, the projected pipeline throughput is 202\,tok/s, or $2.7\times$ the 75.8\,tok/s autoregressive baseline.
+This contrasts with GPU-only speculative decoding, which achieves $<1\times$ speedup because the drafter is too small to amortize the verification overhead on fast hardware.
