@@ -15,6 +15,9 @@ Mamba2~\citep{dao2024transformers} reformulated the selective scan as a structur
 Hybrid architectures combining SSM layers with attention~\citep{lieber2024jamba} have also shown promise.
 
 \paragraph{Positioning.}
-Our work is closest to \citet{choi2025mamba} (Mamba drafter for speculative decoding) and \citet{berdoz2026steering} (guided speculation via verifier hidden states).
-We combine both ideas, injecting verifier signals into an SSM drafter, while additionally addressing SSM cache resynchronization via activation replay and proposing CPU offloading with custom INT8 kernels for memory-constrained deployment.
-Unlike prior guided approaches that target transformer drafters, we show that guidance is effective for recurrent models where no attention mechanism exists to directly align.
+Our work occupies a distinct point in the design space: we combine the robustness of an \emph{external pretrained drafter} with the efficiency of an SSM architecture and the quality boost of verifier-guided injection.
+Self-drafting methods~\citep{cai2024medusa,zhang2024draft,li2024eagle} avoid a separate model but consume GPU memory alongside the verifier, require verifier modification, and offer diminishing returns when verification dominates latency.
+Guided transformer drafters~\citep{berdoz2026steering} keep the drafter external but inherit quadratic attention costs.
+Unguided SSM drafters~\citep{choi2025mamba} are lightweight but lack verifier alignment.
+SpecSSM unifies all three advantages: verifier-guided hidden-state injection into a 27M-parameter Mamba2 drafter that is small enough to offload entirely to CPU with a custom INT8 kernel stack, freeing all GPU memory for the verifier.
+We additionally contribute activation replay for SSM cache resynchronization and provide the first systematic analysis of rejection masking effects on recurrent drafters.
