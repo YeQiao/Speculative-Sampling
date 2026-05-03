@@ -1,16 +1,15 @@
 \paragraph{Model scope.}
-We evaluate only one verifier (LLaMA-3.1-8B) and one drafter size (Mamba2-65M).  Generalization to other verifier families (e.g., Mistral, Qwen) and larger SSM drafters remains to be validated.
+We evaluate with three verifiers (LLaMA-8B, LLaMA-70B, Gemma-4B) and one primary drafter size (Mamba2-27M).
+Generalization to other verifier families (e.g., Mistral, Qwen) and larger SSM drafters remains to be validated.
 
-\paragraph{Training regime.}
-The guided drafter was trained with knowledge distillation from the verifier on the FineWeb-Edu distribution.  Domain shift between pretraining data and evaluation benchmarks may affect acceptance rates.
-% TODO: Evaluate on out-of-distribution data.
+\paragraph{GPU-only speedup.}
+On a fast GPU (H100 NVL), speculative decoding with our tiny drafter yields throughput below the autoregressive baseline (0.43$\times$ for guided Mamba2, 0.83$\times$ for LLaMA-1B).
+The real-world speedup materializes in the CPU-offloaded pipeline; the projected $2.7{\times}$ gain has not yet been measured end-to-end in a fully asynchronous implementation.
 
-\paragraph{Masked vs.\ unmasked evaluation.}
-Our main results use unmasked evaluation because the checkpoint was trained in this setting.  While we show this inflates acceptance for SSM drafters, mask-aware retraining may close the gap.
-
-\paragraph{Systems evaluation.}
-We report acceptance rates and throughput but have not yet completed comprehensive wall-clock speedup measurements or CPU offloading experiments.
-% TODO: Update once systems experiments are done.
+\paragraph{Training data distribution.}
+The guided drafter was trained with knowledge distillation from the verifier on UltraChat data.
+Domain shift between training and evaluation benchmarks may affect acceptance rates, particularly for specialized domains like code (HumanEval) and math (GSM8K).
 
 \paragraph{Broader impact.}
-Speculative decoding accelerates text generation, which could amplify both beneficial and harmful uses of language models.  Our work does not introduce new capabilities beyond speed; all outputs are provably identical to the verifier's distribution.
+Speculative decoding accelerates text generation, which could amplify both beneficial and harmful uses of language models.
+Our work does not introduce new capabilities beyond speed; all outputs are provably identical to the verifier's distribution.

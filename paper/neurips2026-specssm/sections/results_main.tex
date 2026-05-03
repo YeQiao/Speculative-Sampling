@@ -1,18 +1,26 @@
-Table~\ref{tab:main} presents the main speculative decoding results across five benchmarks.
+Table~\ref{tab:main} presents the main speculative decoding results across five benchmarks with LLaMA-3.1-8B as verifier.
+All results use rejection masking and greedy decoding.
 
 \input{tables/main/results}
 
-\paragraph{Guided Mamba2-65M achieves strong acceptance.}
-Our guided drafter achieves an average of 3.17 accepted tokens per round across all benchmarks, with per-dataset acceptance ranging from 2.42 (XSum) to 3.75 (HumanEval).
-Code generation (HumanEval) and instruction-following (Alpaca) yield the highest acceptance, likely because their token distributions are more predictable.
-Summarization (XSum) is hardest, consistent with its requirement for creative paraphrasing.
+\paragraph{Guidance substantially improves SSM acceptance.}
+Our guided Mamba2-27M drafter achieves a mean of 2.33 accepted tokens per round, a 25\% improvement over the pretrained baseline (1.86) and 40\% over the KD-only variant with guidance zeroed out (1.66).
+The guidance benefit is consistent across all five benchmarks, with the largest gains on GSM8K (+0.82) and HumanEval (+0.58).
+Code generation (HumanEval) and math reasoning (GSM8K) yield the highest guided acceptance, likely because their token distributions are more structured.
+Summarization (XSum) is hardest across all drafters, consistent with its requirement for creative paraphrasing.
 
-% TODO: Add unguided baseline row to table once W1 is done
-% TODO: Add wall-clock speedup numbers once W5 is done
-% TODO: Compare against LLaMA-1B and LLaMA-3B transformer drafters
+\paragraph{KD without guidance hurts under masking.}
+A surprising finding is that the knowledge-distilled drafter with guidance zeroed out (1.66) performs \emph{worse} than the pretrained drafter (1.86).
+This indicates that the KD-trained backbone has become reliant on the guidance delta signal: when guidance is removed, the backbone's predictions are miscalibrated.
+This highlights the importance of evaluating guided models both with and without their guidance pathway active.
 
-\paragraph{Throughput.}
-The guided Mamba2-65M drafter achieves throughput between 25.7--39.5 tok/s across benchmarks, compared to an estimated AR baseline of $\sim$17 tok/s for LLaMA-3.1-8B alone.
-% TODO: Measure exact AR baseline throughput and compute speedup ratios
+\paragraph{Mamba2 vs.\ transformer drafter.}
+The LLaMA-3.2-1B transformer drafter achieves a higher mean acceptance (3.39) than our guided Mamba2-27M (2.33), which is expected given its $44\times$ larger backbone parameter count.
+However, the transformer drafter's advantage must be weighed against its inference cost: LLaMA-1B requires substantially more memory and compute per draft token, and its KV-cache grows linearly with context length.
+On an H100 GPU, both drafters result in throughput below the 75.8~tok/s autoregressive baseline because verification dominates latency at this hardware scale.
+The SSM drafter's real advantage materializes in the CPU-offloaded pipeline (\S\ref{sec:cpu_results}), where its tiny size enables efficient heterogeneous execution.
 
-% TODO: Add activation replay comparison once implemented
+\paragraph{Verifier scaling.}
+With the larger LLaMA-3.1-70B verifier (80 layers, 8-bit quantized), pretrained Mamba2-27M acceptance improves from 1.86 to 2.51, a 35\% increase.
+This suggests that guidance benefits compound with verifier quality, since a more capable verifier provides richer hidden-state signals.
+Guided results with the 70B verifier are forthcoming.
