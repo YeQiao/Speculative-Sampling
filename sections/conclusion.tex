@@ -1,16 +1,16 @@
-We presented SpecSSM, a speculative decoding framework that pairs a tiny Mamba2-27M drafter (27M backbone parameters) with transformer verifiers of varying scale.
-By injecting verifier hidden states into the SSM's state-update pathway, our guided drafter achieves a mean of 2.33 accepted tokens per speculation round across five diverse benchmarks with LLaMA-8B, a 25\% improvement over the unguided baseline.
-With LLaMA-70B, pretrained acceptance rises to 2.51 (+35\% over 8B), demonstrating that guidance scales with verifier quality.
+We presented SpecSSM, a speculative decoding framework that pairs tiny externally pretrained Mamba2 drafters with transformer verifiers of varying scale and family.
+By injecting verifier hidden states into the SSM's state-update pathway via lightweight linear projections, guided Mamba2-45M achieves 2.62 mean accepted tokens per round with LLaMA-8B (72\% over the unguided baseline), and guided Mamba2-27M achieves 2.33 (+25\%).
+Guidance transfers across verifier families (LLaMA, Gemma) and scales with verifier size: pretrained acceptance increases 35\% from LLaMA-8B to LLaMA-70B.
 
 We introduced activation replay as an efficient method to resynchronize the SSM's recurrent state after speculative rejection, replacing $O(T)$ re-prefill with $O(K)$ replay.
 On CPU, this yields up to $201{\times}$ speedup at 1024-token contexts, making it essential for the CPU-offloaded pipeline.
-Our custom AVX-512/INT8 kernel stack achieves $7.5{\times}$ over na\"ive PyTorch, completing 8-token drafts in 9\,ms, well within the 16\,ms GPU verification window for asynchronous overlap.
-The projected pipeline throughput of 202\,tok/s represents a $2.7{\times}$ improvement over autoregressive decoding.
+Our profiling-guided kernel optimization stack (AVX-512 $\to$ fused BF16 $\to$ INT8 VNNI) achieves $7.5{\times}$ over na\"ive PyTorch by targeting the linear-projection bottleneck that dominates 85\% of SSM inference time, completing 8-token drafts in 9\,ms, well within the 16\,ms GPU verification window.
+The projected pipeline throughput of 202\,tok/s represents $2.7{\times}$ over autoregressive decoding.
 
-Our masking analysis documented a previously unreported asymmetry between recurrent and transformer drafters under non-compact speculative layouts, underscoring the importance of correct evaluation methodology for SSM-based systems.
+Our ablation analysis reveals several practical insights: backbone finetuning provides $3\times$ the benefit of guidance projection alone, a single high verifier layer is nearly as effective as three, and KD is not a prerequisite for guidance training.
 
 \paragraph{Future work.}
-(1)~Implement and benchmark the full asynchronous CPU-GPU pipeline;
-(2)~context length scaling experiments to quantify replay benefits over longer generations;
-(3)~tree-structured drafting to further improve acceptance;
-(4)~scaling guided SSM drafters to 130M+ parameters.
+(1)~Implement and benchmark the full asynchronous CPU-GPU pipeline end-to-end;
+(2)~context length scaling experiments to quantify replay and throughput benefits over longer generations;
+(3)~evaluate the 70B-guided checkpoint now completing training;
+(4)~tree-structured drafting to further improve acceptance at the cost of verification complexity.

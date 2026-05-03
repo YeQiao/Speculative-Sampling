@@ -1,2 +1,32 @@
-% Put all extended ablations and per-dataset/per-prompt breakdowns here.
-% Include confidence intervals and significance test details for secondary plots.
+\paragraph{Per-dataset throughput (LLaMA-8B, Mamba2-45M guided).}
+Table~\ref{tab:app_throughput} reports end-to-end throughput alongside acceptance.
+All runs use a single H100 NVL GPU for the verifier.
+
+\begin{table}[h]
+\centering
+\caption{Per-dataset throughput for Mamba2-45M guided drafter with LLaMA-8B verifier.}
+\label{tab:app_throughput}
+\vspace{0.5em}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Dataset} & $\bar{n}_a$ & \textbf{Block eff.} & \textbf{Throughput (tok/s)} & $n$ \\
+\midrule
+HumanEval  & 2.25 & 3.25 & 19.53 & 96 \\
+GSM8K      & 3.17 & 4.17 & 25.31 & 96 \\
+Alpaca     & 3.22 & 4.21 & 26.33 & 96 \\
+UltraChat  & 2.42 & 3.42 & 19.72 & 96 \\
+XSum       & 2.03 & 3.03 & 13.94 & 96 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{GPU-only speedup breakdown.}
+On the H100 NVL, the AR baseline runs at $\sim$76\,tok/s.
+With Mamba2-27M guided, speculative throughput is $\sim$37\,tok/s ($0.49\times$); with LLaMA-1B drafter, $\sim$67\,tok/s ($0.83\times$).
+The speedup is below 1$\times$ because verification already takes only 16\,ms on this fast GPU; any drafter overhead degrades the pipeline.
+This motivates our CPU-offloading approach where draft latency is hidden behind GPU verification.
+
+\paragraph{70B quick evaluation details.}
+The 70B verifier results (Table~\ref{tab:verifier_scaling}) use 8-bit quantization via \texttt{bitsandbytes} with \texttt{device\_map=auto} across 2 GPUs.
+The quick evaluation uses $n\!=\!12$ samples per dataset due to GPU memory and time constraints.
+Full $n\!=\!96$ evaluations and 70B-guided results will be added after training completes.

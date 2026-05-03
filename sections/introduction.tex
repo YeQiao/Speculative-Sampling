@@ -38,7 +38,7 @@ A custom C++ kernel stack using AVX-512 intrinsics and INT8 quantization targets
 
 Our contributions are:
 \begin{enumerate}
-    \item A \textbf{guided external SSM drafter} that injects verifier hidden states into Mamba2's state-update branch. With only a 27M backbone ($44\times$ smaller than LLaMA-3.2-1B), guidance improves mean acceptance by 25\% over the unguided pretrained baseline (2.33 vs.\ 1.86 with LLaMA-8B; 2.51 with LLaMA-70B, +35\% over the 8B verifier).
+    \item A \textbf{guided external SSM drafter} that injects verifier hidden states into Mamba2's state-update branch. With backbones of 27M and 45M parameters ($44\times$ and $26\times$ smaller than LLaMA-3.2-1B), guidance improves acceptance by 25--72\% over unguided baselines. The approach transfers across verifier families (LLaMA, Gemma) and scales with verifier size (2.51 mean with LLaMA-70B, +35\% over 8B).
     \item \textbf{Activation replay}, an efficient SSM state resynchronization method that avoids full re-prefill after speculative rejection, providing up to $201\times$ speedup on CPU at 1024-token contexts.
     \item A \textbf{CPU-offloaded drafting pipeline} with a bottleneck-targeted AVX-512/INT8 kernel achieving $7.5\times$ over PyTorch, where draft latency (9\,ms) fits inside the GPU verification window (16\,ms) for asynchronous overlap, projecting $2.7\times$ throughput over autoregressive decoding.
 \end{enumerate}
