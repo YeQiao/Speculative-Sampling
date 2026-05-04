@@ -116,7 +116,7 @@ def plot_acceptance_by_dataset():
     # Data from experiments (LLaMA-8B verifier)
     data = {
         'LLaMA-1B':       [4.88, 2.60, 4.35, 2.73, 2.39],
-        '45M guided':     [2.25, 3.17, 3.22, 2.42, 2.03],
+        '45M guided':     [2.45, 3.47, 3.42, 2.62, 2.23],
         '27M guided':     [2.07, 2.91, 2.75, 2.20, 1.72],
         '27M pretrained': [1.49, 2.09, 2.64, 1.87, 1.18],
     }
