@@ -48,8 +48,9 @@ Each benchmark is evaluated with 96 samples using greedy decoding ($T\!=\!0$).
 We report:
 (i)~\textbf{Average accepted tokens} ($\bar{n}_a$): mean number of draft tokens accepted per speculation round (out of $K\!=\!8$).
 (ii)~\textbf{Committed tokens / block efficiency} ($\bar{n}_c$): mean number of tokens committed per round, defined as $\bar{n}_c = \bar{n}_a + 1$ (except EOS/truncation edge cases).
+All main results use \emph{rejection masking}: rejected positions are zeroed in the verifier's attention mask to prevent attending to stale key-value entries (\S\ref{sec:masking_analysis}).
 (iii)~\textbf{Throughput} (tok/s): end-to-end tokens generated per second.
-(iv)~\textbf{Correctness}: we verify that masked speculative outputs match gold AR via logit divergence.
+(iv)~\textbf{Correctness}: we verify that masked speculative outputs match gold AR via logit divergence (mean absolute diff 0.02 with masking vs.\ 4.10 without).
 
 \paragraph{Hardware.}
 GPU experiments run on 2$\times$ NVIDIA H100 NVL (95\,GB each).
