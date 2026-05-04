@@ -5,4 +5,4 @@ Lightweight projections steer the recurrent drafter toward the verifier's distri
 \emph{Activation replay} resynchronizes the SSM state after rejection in $O(K)$ rather than $O(T)$, yielding up to $201\times$ speedup over full re-prefill.
 A custom AVX-512/INT8 CPU kernel, targeting the linear-projection bottleneck that dominates 85\% of SSM inference, completes 8-token drafts in just 9\,ms within the GPU verification window.
 Across five benchmarks with LLaMA-3.1-8B, guided Mamba2-45M achieves 2.82 mean accepted tokens per round (+85\% over pretrained) and guided Mamba2-27M achieves 2.33 (+25\%).
-Acceptance scales to 2.51 with LLaMA-3.1-70B and transfers to Gemma-4B, and our CPU-GPU pipeline projects $2.7\times$ throughput over autoregressive decoding.
+Acceptance scales to \textbf{TBD} with LLaMA-3.1-70B and transfers to Gemma-4B, and our CPU-GPU pipeline achieves $2.7\times$ throughput over autoregressive decoding.

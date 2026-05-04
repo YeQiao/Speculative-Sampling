@@ -1,19 +1,15 @@
 Autoregressive decoding in large language models (LLMs) is inherently sequential: each token depends on all previous tokens, making generation latency proportional to sequence length regardless of available compute.
 Speculative decoding~\citep{leviathan2023fast,chen2023accelerating} addresses this by letting a small, fast \emph{drafter} model propose $K$ candidate tokens that the large \emph{verifier} checks in a single batched forward pass, accepting correct tokens and resampling at the first disagreement.
 
-\paragraph{Internal vs.\ external drafters.}
 Two families of speculative drafters have emerged.
 \emph{Internal} (self-drafting) methods reuse verifier components: Medusa~\citep{cai2024medusa} attaches parallel prediction heads, Draft \& Verify~\citep{zhang2024draft} exploits early-exit layers, and EAGLE~\citep{li2024eagle} autoregressively predicts the verifier's own feature vectors.
 These approaches avoid training a separate model, but they share practical drawbacks: they consume GPU memory alongside the verifier, require architectural modifications or retraining, and provide diminishing returns when the verification pass itself dominates wall-clock time.
 They are also tightly coupled to the verifier's internals and can degrade on out-of-distribution inputs.
 \emph{External} pretrained drafters are independently trained and therefore more robust to distribution shift, but existing designs use transformer architectures that remain expensive in their own right.
-
-\paragraph{The memory and compute wall.}
 Even a small transformer drafter like LLaMA-3.2-1B retains quadratic attention complexity and a KV-cache that grows linearly with context length.
 At long contexts this cache competes for GPU memory with the verifier's own KV-cache, forcing painful trade-offs between drafter capacity and serving budget.
 The problem is compounded in memory-constrained deployments: running a 70B verifier already consumes most of GPU VRAM, leaving little room for a billion-parameter drafter and its cache.
 
-\paragraph{SSMs as linear-time drafters.}
 State space models (SSMs) offer a natural escape from both costs.
 Mamba2~\citep{dao2024transformers} generates tokens in $O(1)$ time and memory per step with no KV-cache, making it an attractive drafter candidate.
 \citet{choi2025mamba} confirmed that Mamba-based drafters achieve competitive acceptance rates at small scales.
@@ -21,13 +17,10 @@ However, two fundamental obstacles remain.
 First, \emph{distribution misalignment}: a small recurrent SSM is architecturally far more distant from a large transformer verifier than a small transformer is, since it lacks attention entirely.
 This gap makes alignment substantially harder, and vanilla SSM drafters underperform comparably sized transformer drafters without explicit guidance.
 Second, \emph{hidden-state rollback}: unlike a transformer's KV-cache, which can be truncated to any prefix after speculative rejection, Mamba2's recurrent state folds the entire history into a fixed-size vector with no cheap rollback, requiring a full $O(T)$ re-prefill after every rejection round.
-
-\paragraph{Implementation bottlenecks.}
 Beyond algorithmic challenges, deploying an SSM drafter is complicated by execution efficiency.
 On GPU, Mamba2's sequential selective scan is difficult to parallelize for single-token generation, leaving the GPU underutilized during drafting.
 On CPU, the recurrence is inherently sequential, and profiling reveals that linear projection layers account for 85\% of wall-clock time, creating a clear performance bottleneck that generic frameworks like PyTorch do not optimize for.
 
-\paragraph{Our approach: SpecSSM.}
 We address all four obstacles, misalignment, rollback, GPU underutilization, and CPU bottleneck, in a unified framework.
 We present \textbf{SpecSSM}, which combines an externally pretrained Mamba2 drafter (27M backbone, $44\times$ smaller than LLaMA-3.2-1B) with three key innovations.
 (1)~\emph{Guided injection}: lightweight linear projections inject verifier hidden-state signals into Mamba2's state-update (\texttt{x}-branch) pathway, steering the recurrent drafter toward the verifier's distribution at a cost of only 0.3\% additional parameters and with no modification to the verifier.
