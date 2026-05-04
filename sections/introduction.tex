@@ -23,15 +23,14 @@ On CPU, the recurrence is inherently sequential, and profiling reveals that line
 
 We address all four obstacles, misalignment, rollback, GPU underutilization, and CPU bottleneck, in a unified framework.
 We present \textbf{SpecSSM}, which combines an externally pretrained Mamba2 drafter (27M backbone, $44\times$ smaller than LLaMA-3.2-1B) with three key innovations.
-(1)~\emph{Guided injection}: lightweight linear projections inject verifier hidden-state signals into Mamba2's state-update (\texttt{x}-branch) pathway, steering the recurrent drafter toward the verifier's distribution at a cost of only 0.3\% additional parameters and with no modification to the verifier.
-Recent work by~\citet{berdoz2026steering} showed that such steering is effective for transformer drafters; we demonstrate that it bridges the larger architectural gap to recurrent models.
+(1)~\emph{Guided injection}: lightweight linear projections inject verifier hidden-state signals into Mamba2's state-update (\texttt{x}-branch) pathway, maneuvering the recurrent drafter toward the verifier's distribution at a cost of only 0.3\% additional parameters and with no modification to the verifier. We demonstrate that it bridges the larger architectural gap to recurrent models and is mandatory for SSM drafters to work effectively.
 (2)~\emph{Activation replay}: we snapshot the SSM state before each draft round and replay only accepted tokens after rejection, reducing resynchronization from $O(T)$ full re-prefill to $O(K)$ replay (up to $201\times$ faster at 1024-token contexts).
 (3)~\emph{CPU offloading with a custom kernel}: because the drafter is tiny ($\sim$55\,MB in FP32), we offload it entirely to CPU, freeing all GPU memory for the verifier.
 A custom C++ kernel stack using AVX-512 intrinsics and INT8 quantization targets the linear-projection bottleneck, achieving $7.5\times$ speedup over na\"ive PyTorch and completing 8-token drafts in 9\,ms, which fits inside the 16\,ms GPU verification window for asynchronous pipeline overlap.
 
 Our contributions are:
 \begin{enumerate}
-    \item A \textbf{guided external SSM drafter} that injects verifier hidden states into Mamba2's state-update branch. With backbones of 27M and 45M parameters ($44\times$ and $26\times$ smaller than LLaMA-3.2-1B), guidance improves acceptance by 25--72\% over unguided baselines. The approach transfers across verifier families (LLaMA, Gemma) and scales with verifier size (2.51 mean with LLaMA-70B, +35\% over 8B).
+    \item A \textbf{guided external SSM drafter} that injects verifier hidden states into Mamba2's state-update branch. With backbones of 27M and 45M parameters ($44\times$ and $26\times$ smaller than LLaMA-3.2-1B), guidance improves acceptance by 25--85\% over unguided baselines. The approach transfers across verifier families (LLaMA, Gemma) and scales with verifier size (TBD mean with LLaMA-70B, +35\% over 8B).
     \item \textbf{Activation replay}, an efficient SSM state resynchronization method that avoids full re-prefill after speculative rejection, providing up to $201\times$ speedup on CPU at 1024-token contexts.
-    \item A \textbf{CPU-offloaded drafting pipeline} with a bottleneck-targeted AVX-512/INT8 kernel achieving $7.5\times$ over torch.compile, where draft latency (9\,ms) fits inside the GPU verification window (16\,ms) for asynchronous overlap, projecting $2.7\times$ throughput over autoregressive decoding.
+    \item A \textbf{CPU-offloaded drafting pipeline} with a bottleneck-targeted AVX-512/INT8 kernel achieving $7.5\times$ over torch.compile, where draft latency (9\,ms) fits inside the GPU verification window (16\,ms) for asynchronous overlap, achieving $2.7\times$ throughput over autoregressive decoding.
 \end{enumerate}
