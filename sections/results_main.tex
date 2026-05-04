@@ -1,0 +1,63 @@
+Table~\ref{tab:main} presents the main speculative decoding results across five benchmarks with LLaMA-3.1-8B as verifier.
+All results use rejection masking and greedy decoding with $K\!=\!8$ draft tokens.
+In addition to mean accepted tokens ($\bar{n}_a$), we report block efficiency as mean committed tokens per round ($\bar{n}_c = \bar{n}_a + 1$).
+Figure~\ref{fig:acceptance} visualizes acceptance rates by dataset.
+
+\input{tables/main/results}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\linewidth]{figures/main/acceptance_by_dataset.pdf}
+  \caption{Mean accepted tokens per dataset with LLaMA-3.1-8B verifier ($K\!=\!8$, greedy). Guided Mamba2-45M approaches the much larger LLaMA-1B on GSM8K and Alpaca, while remaining $26\times$ smaller.}
+  \label{fig:acceptance}
+\end{figure}
+
+\paragraph{Guidance substantially improves SSM acceptance.}
+Both Mamba2 drafter sizes show large gains from guidance.
+The guided Mamba2-27M achieves 2.33 mean accepted tokens, a 25\% improvement over the pretrained baseline (1.86).
+The guided Mamba2-45M achieves 2.62, a 72\% improvement over its pretrained baseline (1.52) and an absolute gain of +1.10 tokens per round.
+The advantage is consistent across all five benchmarks, with particularly strong gains on structured tasks: GSM8K (+1.34 for 45M) and Alpaca (+1.16).
+
+\paragraph{KD without guidance hurts under masking.}
+For both drafter sizes, the KD-trained backbone with guidance zeroed out (1.66 for 27M, 1.20 for 45M) performs \emph{worse} than the pretrained drafter.
+This indicates that KD-trained backbones become reliant on the guidance delta signal: when guidance is removed, the backbone's predictions are miscalibrated.
+
+\paragraph{Scaling the drafter backbone.}
+Increasing the drafter from 27M to 45M backbone parameters yields a non-trivial gain when guided: 2.33 $\to$ 2.62 (+12\%).
+Notably, the 45M pretrained model (1.52) is \emph{worse} than the 27M pretrained model (1.86) because it was undertrained (0.38 epochs vs.\ $\sim$1 epoch on FineWeb-Edu).
+Yet with guidance, the 45M model surpasses the 27M variant, suggesting that guidance injection compensates for insufficient pretraining by providing a strong alignment signal.
+
+\paragraph{Mamba2 vs.\ transformer drafter.}
+The LLaMA-3.2-1B transformer drafter achieves a higher mean acceptance (3.39) than guided Mamba2-45M (2.62), which is expected given its $26\times$ larger backbone.
+However, the guided 45M drafter reaches 77\% of LLaMA-1B's acceptance, while being architecturally suited for CPU offloading with no KV-cache overhead.
+On an H100 GPU, all drafters result in throughput below the 75.8\,tok/s autoregressive baseline because verification dominates latency.
+The SSM drafter's advantage materializes in the CPU-offloaded pipeline (\S\ref{sec:cpu_results}).
+
+\subsection{Verifier Scaling and Cross-Family Transfer}
+\label{sec:verifier_scaling}
+
+Table~\ref{tab:verifier_scaling} evaluates guidance across three verifier families and scales.
+Figure~\ref{fig:guidance_improvement} summarizes the guidance improvement factor.
+
+\input{tables/main/verifier_scaling}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.7\linewidth]{figures/main/guidance_improvement.pdf}
+  \caption{Guidance improvement across verifier configurations. Guidance consistently improves pretrained acceptance by 25--72\%. The 70B-guided result is pending.}
+  \label{fig:guidance_improvement}
+\end{figure}
+
+\paragraph{Acceptance scales with verifier size.}
+With LLaMA-3.1-70B, the pretrained Mamba2-27M drafter achieves 2.51 mean acceptance, a 35\% increase over LLaMA-8B (1.86).
+A larger verifier produces richer hidden states, so guidance is expected to yield even larger gains.
+The 70B-guided checkpoint is completing training and results will be added upon completion.
+
+\paragraph{Guidance transfers across verifier families.}
+The same Mamba2-45M architecture, retrained for each verifier, shows consistent guidance improvement with Gemma-4-E4B: guided acceptance (0.94) is 49\% higher than pretrained (0.63).
+The absolute acceptance with Gemma is lower than with LLaMA, reflecting the verifier's smaller model capacity and different tokenization.
+Training on mixed data (guided-mixed, 1.01) provides an additional 7\% gain, suggesting that data diversity helps when the verifier-drafter distribution gap is large.
+
+\paragraph{KD consistently hurts without guidance.}
+Across all three verifiers, the KD-trained drafter with guidance zeroed out scores lowest: 1.66, 2.42, and 0.42 for LLaMA-8B, LLaMA-70B, and Gemma respectively.
+This confirms that KD-trained backbones encode a dependency on guidance signals that degrades standalone performance.

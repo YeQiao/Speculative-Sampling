@@ -1,0 +1,20 @@
+\paragraph{Model scope.}
+We evaluate with three verifiers (LLaMA-8B, LLaMA-70B, Gemma-4B) and two Mamba2 drafter sizes (27M, 45M backbone).
+Generalization to other verifier families (e.g., Mistral, Qwen) and alternative SSM architectures (e.g., RWKV, linear attention) remains to be validated.
+
+\paragraph{GPU-only speedup.}
+On a fast GPU (H100 NVL), speculative decoding with our tiny drafter yields throughput below the autoregressive baseline ($0.49\times$ for guided Mamba2-27M, $0.83\times$ for LLaMA-1B).
+The real-world speedup materializes in the CPU-offloaded pipeline; the projected $2.7{\times}$ gain assumes perfect pipeline overlap and has not yet been measured in a fully asynchronous end-to-end implementation.
+
+\paragraph{45M drafter pretraining.}
+The Mamba2-45M pretrained checkpoint was undertrained (0.38 epochs on FineWeb-Edu vs.\ $\sim$1 epoch for the 27M variant).
+Its pretrained baseline (1.52) is lower than the 27M's (1.86), making the 45M guidance gains partially confounded with the KD/guidance training compensating for insufficient pretraining.
+A properly pretrained 45M backbone may yield even higher guided acceptance.
+
+\paragraph{Training data distribution.}
+The guided drafter was trained with knowledge distillation from the verifier on UltraChat data.
+Domain shift between training and evaluation benchmarks may affect acceptance rates, particularly for specialized domains like code (HumanEval) and math (GSM8K), where Gemma-4B acceptance is notably low.
+
+\paragraph{Broader impact.}
+Speculative decoding accelerates text generation, which could amplify both beneficial and harmful uses of language models.
+Our work does not introduce new capabilities beyond speed; all outputs are provably identical to the verifier's distribution.

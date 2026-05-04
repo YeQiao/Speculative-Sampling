@@ -1,0 +1,18 @@
+\subsection{Autoregressive Decoding and Speculative Decoding}
+
+Given a language model $p_\theta$ and prompt $\mathbf{x}_{1:n}$, autoregressive (AR) decoding generates tokens sequentially via $x_{t+1} \sim p_\theta(\cdot \mid \mathbf{x}_{1:t})$, making wall-clock latency proportional to the number of generated tokens.
+Speculative decoding~\citep{leviathan2023fast,chen2023accelerating} mitigates this by using a fast \emph{drafter} $q_\phi$ to propose $K$ candidate tokens that the \emph{verifier} $p_\theta$ checks in a single batched forward pass.
+Each candidate $x_i \sim q_\phi(\cdot \mid \mathbf{x}_{1:t+i-1})$ is accepted with probability $\min\big(1,\, p_\theta(x_i)/q_\phi(x_i)\big)$; tokens up to the first rejection are kept and a corrected token is resampled at the rejection point, preserving the verifier's distribution exactly.
+The expected speedup depends on (i)~the drafter's acceptance rate $\alpha$, (ii)~its latency relative to the verifier, and (iii)~systems overhead (cache management, data transfer).
+
+\subsection{State Space Models and Mamba2}
+
+State space models (SSMs)~\citep{gu2022efficiently,gu2023mamba} process sequences through a learnable recurrent state $\mathbf{h}_t \in \mathbb{R}^{N}$:
+\begin{equation}
+  \mathbf{h}_t = \bar{\mathbf{A}}_t\, \mathbf{h}_{t-1} + \bar{\mathbf{B}}_t\, x_t, \qquad y_t = \mathbf{C}_t\, \mathbf{h}_t,
+  \label{eq:ssm}
+\end{equation}
+where the input-dependent matrices $\bar{\mathbf{A}}_t, \bar{\mathbf{B}}_t, \mathbf{C}_t$ are computed via a \emph{selective scan} over the input.
+Mamba2~\citep{dao2024transformers} introduces a multi-head structured variant with $H$ heads and head dimension $d_h$, processing the input through an \texttt{in\_proj} layer that splits into a \emph{gate} (z-branch) and a \emph{state-update} (x-branch) containing the SSM parameters $(\mathbf{B}, \mathbf{C}, \Delta)$.
+A key property for our work: unlike transformer attention, the SSM state $\mathbf{h}_t$ is $O(Nd_h)$ per layer and constant across steps, making generation memory-efficient.
+However, this recurrent state cannot be cheaply \emph{truncated} after speculative rejection, motivating us to implement activation replay method (\S\ref{sec:method}).

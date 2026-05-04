@@ -1,0 +1,14 @@
+\begin{table}[t]
+\centering
+\caption{Cross-verification of rejection masking on acceptance rate ($\bar{n}_a$, averaged over 5 benchmarks). SSM and transformer drafters show opposite masking effects, confirming the asymmetry arises from drafter architecture.}
+\label{tab:mask_cross}
+\vspace{0.5em}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Drafter} & \textbf{Masked} & \textbf{Unmasked} & \textbf{$\Delta$} \\
+\midrule
+Mamba2-27M (guided) & 2.33 & 3.17 & +0.84 $\uparrow$ \\
+LLaMA-3.2-1B       & 2.73 & 2.13 & $-$0.60 $\downarrow$ \\
+\bottomrule
+\end{tabular}
+\end{table}

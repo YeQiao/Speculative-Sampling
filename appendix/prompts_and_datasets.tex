@@ -1,0 +1,11 @@
+\paragraph{Datasets.}
+We use five benchmarks spanning diverse generation tasks:
+\begin{itemize}
+  \item \textbf{HumanEval}~\citep{chen2021codex}: 164 Python function completion tasks. We use the docstring as prompt and generate up to 256 tokens.
+  \item \textbf{GSM8K}~\citep{cobbe2021gsm8k}: 1319 grade-school math word problems. We use the question as prompt with a ``Let's think step by step'' suffix.
+  \item \textbf{Alpaca}~\citep{taori2023alpaca}: 52K instruction-following examples. We sample 96 instructions and generate completions.
+  \item \textbf{UltraChat}~\citep{ding2023ultrachat}: Multi-turn dialogue dataset. We use the first user turn as prompt.
+  \item \textbf{XSum}~\citep{narayan2018xsum}: BBC article summarization. We provide the article and ask for a single-sentence summary.
+\end{itemize}
+All evaluations sample 96 examples (except 70B quick evaluations which use 12).
+Maximum generation length is 128 tokens for all datasets.

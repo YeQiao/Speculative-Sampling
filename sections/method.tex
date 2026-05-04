@@ -1,0 +1,135 @@
+We describe the three components of SpecSSM: (1)~the guided SSM drafter architecture, (2)~the generation loop with the activation replay resynchronization method, and (3)~CPU offloading of the drafter.
+Figure~\ref{fig:architecture} provides an overview of the complete system.
+
+\begin{figure}[t]
+  \centering
+  % TODO: Replace with hand-drawn/TikZ architecture diagram
+  \fbox{\parbox{0.9\textwidth}{\centering\vspace{2em}
+  \textbf{Architecture Overview (to be drawn)}\\[0.5em]
+  \small
+  Left: Verifier (LLaMA on GPU) $\to$ GuidanceExtractor (concat layers 5, 16, 29) $\to$ PrepMambaDeltas $\to$ per-layer $\Delta_\ell$\\
+  Center: Mamba2 drafter (on CPU) with x-branch delta injection at each layer\\
+  Right: Speculative decoding loop: Draft $K$ tokens $\to$ Verify in batch $\to$ Accept/Reject $\to$ Activation Replay\\
+  Bottom: CPU-GPU pipeline timeline (9\,ms draft $\subset$ 16\,ms verify window)
+  \vspace{2em}}}
+  \caption{SpecSSM architecture. The verifier extracts hidden states from selected layers, which are projected into per-layer additive deltas and injected into the Mamba2 drafter's x-branch. After speculative rejection, activation replay resynchronizes the SSM state in $O(K)$ time. The drafter runs on CPU with a custom INT8 kernel while the verifier occupies the GPU.}
+  \label{fig:architecture}
+\end{figure}
+
+\subsection{Guided SSM Drafter}
+\label{sec:guided}
+
+Our drafter is a Mamba2-27M model~\citep{dao2024transformers} with 16 layers, hidden size 512, expand factor 2 ($d_{\mathrm{inner}}=1024$), state size 128, 16 heads, and head dimension 64.
+The 27M refers to the backbone (SSM layers + projections); the model additionally shares the verifier's 66M embedding/LM-head layer, making total parameter count tokenizer-dependent.
+We modify the Mamba2 architecture to accept \emph{guidance signals} from the verifier.
+
+\paragraph{Guidance extraction.}
+Given a verifier $p_\theta$ (LLaMA 3.1-8B), we extract hidden states from three layers at positions early ($\ell_1=5$), middle ($\ell_2=16$), and late ($\ell_3=29$) in the verifier's 32-layer stack.
+These are concatenated and projected into a single guidance embedding:
+\begin{equation}
+  \mathbf{g}_t = \mathbf{W}_g\, [\mathbf{h}_t^{(\ell_1)} \| \mathbf{h}_t^{(\ell_2)} \| \mathbf{h}_t^{(\ell_3)}] + \mathbf{b}_g,
+  \label{eq:guidance_extract}
+\end{equation}
+where $\mathbf{W}_g \in \mathbb{R}^{d_v \times 3d_v}$, $d_v = 4096$ is the verifier hidden dimension, and $\mathbf{g}_t \in \mathbb{R}^{d_v}$.
+The projection is initialized as the identity average: $\mathbf{W}_g = [\mathbf{I}\, \mathbf{I}\, \mathbf{I}]$, $\mathbf{b}_g = \mathbf{0}$.
+
+\paragraph{Guidance injection via x-branch deltas.}
+The guidance embedding is mapped to per-layer additive deltas through a learned linear projection:
+\begin{equation}
+  \Delta_\ell = (\mathbf{W}_{\mathrm{prep}} \cdot \mathrm{LN}(\mathbf{g}_t))_\ell, \quad \ell = 1, \ldots, L_d,
+  \label{eq:prep_deltas}
+\end{equation}
+where $L_d$ is the number of drafter layers and $\Delta_\ell \in \mathbb{R}^{d_{\mathrm{inner}}}$.
+At each drafter layer, after the \texttt{in\_proj} linear maps the input into the gate (z-branch) and state-update (x-branch) components, we inject the delta additively into the x-branch:
+\begin{equation}
+  \mathbf{x}_\ell \leftarrow \mathbf{x}_\ell + \Delta_\ell.
+  \label{eq:inject}
+\end{equation}
+This targets the state-update pathway (the input to the selective scan), allowing guidance to influence the SSM's recurrent dynamics without altering the gating mechanism.
+The projection weights are zero-initialized, so at the start of training the guided model behaves identically to the unguided base.
+
+\paragraph{Training.}
+The drafter is trained via knowledge distillation from the verifier using total variation distance (TVD) loss:
+\begin{equation}
+  \mathcal{L}_{\mathrm{TVD}} = \frac{1}{2} \sum_v |p_\theta(v \mid \mathbf{x}_{<t}) - q_\phi(v \mid \mathbf{x}_{<t}, \mathbf{g}_{<t})|,
+  \label{eq:tvd}
+\end{equation}
+where $q_\phi$ denotes the guided drafter.
+We train for 10 epochs on 50K filtered samples from UltraChat~\citep{ding2023ultrachat} using AdamW with learning rate $3{\times}10^{-4}$ and cosine decay.
+The drafter backbone is optionally finetuned alongside the guidance projections; we find that backbone finetuning provides $3{\times}$ more benefit than frozen guidance alone (\S\ref{sec:analysis}).
+
+\subsection{Speculative Decoding with SSM Cache Resynchronization}
+\label{sec:replay}
+
+\paragraph{Non-compact layout.}
+We use a non-compact layout where the write cursor advances by $K+1$ per round regardless of how many tokens are accepted.
+Rejected draft tokens remain in the buffer at their physical positions; a 2D attention mask zeros out rejected positions so the verifier never attends to stale key-value entries.
+Position IDs encode \emph{semantic} positions, skipping over rejected slots.
+
+\paragraph{The SSM cache problem.}
+In transformer-based speculative decoding, rejection is handled by truncating the KV cache to the last accepted position.
+For SSMs, the hidden state $\mathbf{h}_t$ encodes the entire history through the recurrent dynamics of Eq.~\eqref{eq:ssm}, and there is no efficient truncation operation.
+After rejection at position $t$, the hidden state includes information from rejected tokens $t+1, \ldots, t+K$ in the convolution buffer and SSM state.
+
+\paragraph{Activation replay.}
+Our key insight is that instead of re-running the drafter over the entire prompt to reconstruct a clean state, we can \emph{replay} only the accepted tokens through the SSM.
+Specifically, after the verifier accepts $n_a$ of $K$ draft tokens, we:
+\begin{enumerate}
+  \item Extract the accepted token subsequence $\hat{\mathbf{x}} = [x_{t+1}, \ldots, x_{t+n_a}, x_{\mathrm{resample}}]$
+  \item Restore the SSM state $\mathbf{h}_t$ saved \emph{before} the current draft round began (snapshot cost: 8.96\,MB for Mamba2-27M at batch size 1)
+  \item Replay $\hat{\mathbf{x}}$ through the drafter starting from $\mathbf{h}_t$
+\end{enumerate}
+This produces a state that is \emph{bit-identical} to what would result from never having drafted the rejected tokens, in $O(n_a)$ time rather than $O(T)$ for full re-prefill (where $T$ is the total sequence length).
+On CPU, where single-step latency is $\sim$7\,ms, this difference is dramatic: at 1024-token context, re-prefill costs 8.0\,s while replay costs 40\,ms ($201\times$ speedup, Table~\ref{tab:replay}).
+On GPU the benefit is less pronounced since the model is small enough for fast parallel re-prefill ($\sim$16\,ms regardless of context length).
+
+Algorithm~\ref{alg:specssm} summarizes the full SpecSSM generation loop with activation replay.
+
+\begin{algorithm}[t]
+\caption{SpecSSM: Speculative decoding with guided SSM drafter and activation replay.}
+\label{alg:specssm}
+\begin{algorithmic}[1]
+\REQUIRE Verifier $p_\theta$ (GPU), guided drafter $q_\phi$ (CPU), prompt $\mathbf{x}_{1:n}$, lookahead $K$
+\STATE Prefill: run $p_\theta(\mathbf{x}_{1:n})$, extract guidance $\mathbf{g} \gets \textsc{ExtractGuidance}(p_\theta)$
+\STATE Prefill: run $q_\phi(\mathbf{x}_{1:n-1})$ with zero deltas to warm SSM state $\mathbf{h}$
+\WHILE{not done}
+  \STATE $\mathbf{h}_{\mathrm{snap}} \gets \mathbf{h}$ \COMMENT{Snapshot SSM state (8.96\,MB)}
+  \STATE $\boldsymbol{\Delta} \gets \textsc{PrepDeltas}(\mathbf{g})$ \COMMENT{Project guidance to per-layer deltas}
+  \FOR{$k = 1$ \TO $K$}
+    \STATE $\hat{x}_k \sim q_\phi(\cdot \mid \mathbf{h}, \boldsymbol{\Delta})$ \COMMENT{Draft one token with guidance (CPU)}
+  \ENDFOR
+  \STATE $\mathbf{p}_{1:K+1} \gets p_\theta(\hat{x}_{1:K} \mid \text{mask})$ \COMMENT{Verify all drafts in one pass (GPU)}
+  \STATE $n_a \gets \textsc{RejectSample}(\mathbf{p}, \mathbf{q}, \hat{x}_{1:K})$ \COMMENT{Accept prefix, resample at rejection}
+  \STATE $\mathbf{h} \gets \mathbf{h}_{\mathrm{snap}}$ \COMMENT{Restore clean state}
+  \STATE Replay: run $q_\phi([x_{\mathrm{accepted}_1}, \ldots, x_{\mathrm{accepted}_{n_a}}, x_{\mathrm{resample}}])$ from $\mathbf{h}$ \COMMENT{$O(n_a)$ replay}
+  \STATE $\mathbf{g} \gets \textsc{ExtractGuidance}(p_\theta, \text{position}=n_a)$ \COMMENT{Fresh guidance}
+  \STATE Update cursor, zero rejected positions in attention mask
+\ENDWHILE
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{CPU Offloading}
+\label{sec:cpu}
+
+The tiny SSM drafter (27M backbone, $\sim$55\,MB in FP32 excluding the shared embedding) fits comfortably in CPU memory, freeing all GPU memory for the verifier.
+We implement an optimized CPU inference stack in three progressively faster tiers.
+
+\paragraph{Tier 1: AVX-512 SSM kernel.}
+The core selective scan recurrence (Eq.~\ref{eq:ssm}) processes $N\!=\!128$ state elements per $(h,d)$ position.
+With 512-bit SIMD registers holding 16 float32 values, each state update requires exactly 8 vectorized FMA iterations.
+We parallelize over the $(B, H, D)\!=\!1{\times}16{\times}64$ independent work items using OpenMP.
+This achieves $4\times$ speedup over PyTorch CPU for the SSM kernel alone.
+However, profiling reveals that linear projections dominate per-layer time (85\%), not the SSM step (10\%).
+
+\paragraph{Tier 2: Fused BF16 forward pass.}
+We fuse the entire 16-layer forward pass and LM head into a single C++ function, eliminating Python dispatch overhead ($\sim$3200 calls per token) and converting linear layers to BF16 with AMX matrix multiply.
+The fused BF16 model achieves $2.8\times$ over na"ive PyTorch, reducing 8-token draft latency from 79\,ms to 32\,ms at 8 threads.
+
+\paragraph{Tier 3: INT8 VNNI quantization.}
+We quantize weights and activations to INT8 using AVX-512 VNNI instructions, which perform 4 multiply-accumulates per clock cycle on supported hardware.
+The INT8 fused model achieves $7.5\times$ over na"ive PyTorch, completing 8-token drafts in 9\,ms at 16 threads (924\,tok/s throughput).
+
+\paragraph{Asynchronous pipeline.}
+Since the LLaMA-8B verifier takes $\sim$16\,ms per forward pass on an H100 GPU and our INT8 CPU draft takes $\sim$9\,ms for 8 tokens, the draft fits entirely within the verification window.
+In the pipelined regime, the GPU verifies the current batch while the CPU concurrently drafts the next batch.
+With mean acceptance of 2.33 tokens per round, the projected throughput is 202\,tok/s, a $2.7\times$ improvement over the 75.8\,tok/s autoregressive baseline.
