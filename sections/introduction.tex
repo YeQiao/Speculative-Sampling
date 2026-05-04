@@ -1,31 +1,34 @@
-Autoregressive decoding in large language models (LLMs) is inherently sequential: each token depends on all previous tokens, making generation latency proportional to sequence length regardless of available compute.
-Speculative decoding~\citep{leviathan2023fast,chen2023accelerating} addresses this by letting a small, fast \emph{drafter} model propose $K$ candidate tokens that the large \emph{verifier} checks in a single batched forward pass, accepting correct tokens and resampling at the first disagreement.
+Large-language-model (LLM) inference is tightly bounded by the sequential nature of autoregressive decoding: the cost of producing each new token grows proportionally to the square of the number of tokens that have already been generated (i.e., the context length).
+Interactive systems (chatbots, code autocompletion, real-time translation) cannot tolerate the 30--100 ms per-token latency that this induces.
+Speculative decoding~\citep{leviathan2023fast,chen2023accelerating} addresses this by letting a small, fast \emph{drafter} model predict a short buffer of $K$ tokens, while a heavyweight \emph{verifier} validates the entire buffer in a single batched forward pass, accepting correct tokens and resampling at the first disagreement.
 
 Two families of speculative drafters have emerged.
-\emph{Internal} (self-drafting) methods reuse verifier components: Medusa~\citep{cai2024medusa} attaches parallel prediction heads, Draft \& Verify~\citep{zhang2024draft} exploits early-exit layers, and EAGLE~\citep{li2024eagle} autoregressively predicts the verifier's own feature vectors.
-These approaches avoid training a separate model, but they share practical drawbacks: they consume GPU memory alongside the verifier, require architectural modifications or retraining, and provide diminishing returns when the verification pass itself dominates wall-clock time.
-They are also tightly coupled to the verifier's internals and can degrade on out-of-distribution inputs.
-\emph{External} pretrained drafters are independently trained and therefore more robust to distribution shift, but existing designs use transformer architectures that remain expensive in their own right.
-Even a small transformer drafter like LLaMA-3.2-1B retains quadratic attention complexity and a KV-cache that grows linearly with context length.
-At long contexts this cache competes for GPU memory with the verifier's own KV-cache, forcing painful trade-offs between drafter capacity and serving budget.
-The problem is compounded in memory-constrained deployments: running a 70B verifier already consumes most of GPU VRAM, leaving little room for a billion-parameter drafter and its cache.
+\emph{Internal} (self-drafting) methods -- such as Medusa~\citep{cai2024medusa}, Draft \& Verify~\citep{zhang2024draft}, and EAGLE~\citep{li2024eagle} -- re-use or modify the verifier's own layers.
+These approaches avoid training a separate drafter, but they inflate GPU memory usage, require architectural modifications or retraining, give little benefit once the verifier's forward pass dominates, and often break on out-of-distribution data.
+\emph{External} pretrained drafters are independently trained models and are therefore more robust to distribution shift.
+However, they normally employ transformer drafters (e.g., LLaMA-3.2-1B) whose quadratic-time attention and growing KV-cache compete for VRAM.
+This competition is especially severe when a 70-B verifier already consumes most of the GPU VRAM, leaving little room for a billion-parameter drafter and its cache.
 
-State space models (SSMs) offer a natural escape from both costs.
-Mamba2~\citep{dao2024transformers} generates tokens in $O(1)$ time and memory per step with no KV-cache, making it an attractive drafter candidate.
-\citet{choi2025mamba} confirmed that Mamba-based drafters achieve competitive acceptance rates at small scales.
-However, two fundamental obstacles remain.
-First, \emph{distribution misalignment}: a small recurrent SSM is architecturally far more distant from a large transformer verifier than a small transformer is, since it lacks attention entirely.
-This gap makes alignment substantially harder, and vanilla SSM drafters underperform comparably sized transformer drafters without explicit guidance.
-Second, \emph{hidden-state rollback}: unlike a transformer's KV-cache, which can be truncated to any prefix after speculative rejection, Mamba2's recurrent state folds the entire history into a fixed-size vector with no cheap rollback, requiring a full $O(T)$ re-prefill after every rejection round.
-Beyond algorithmic challenges, deploying an SSM drafter is complicated by execution efficiency.
-On GPU, Mamba2's sequential selective scan is difficult to parallelize for single-token generation, leaving the GPU underutilized during drafting.
-On CPU, the recurrence is inherently sequential, and profiling reveals that linear projection layers account for 85\% of wall-clock time, creating a clear performance bottleneck that generic frameworks like PyTorch do not optimize for.
+State-space models (SSMs) present a clean alternative: by replacing attention with a linear state transition, Mamba2~\citep{dao2024transformers} drafter achieves $O(1)$ per-step time, constant hidden-state size, and no KV-cache, making it an attractive drafter candidate.
+Mamba-based drafters have shown that, with only a modest number of parameters, they can match or even surpass transformer perplexity while generating tokens faster \citet{choi2025mamba}.
+% However, two fundamental obstacles remain.
+% First, \emph{distribution misalignment}: a small recurrent SSM is architecturally far more distant from a large transformer verifier than a small transformer is, since it lacks attention entirely.
+% This gap makes alignment substantially harder, and vanilla SSM drafters underperform comparably sized transformer drafters without explicit guidance.
+% Second, \emph{hidden-state rollback}: unlike a transformer's KV-cache, which can be truncated to any prefix after speculative rejection, Mamba2's recurrent state folds the entire history into a fixed-size vector with no cheap rollback, requiring a full $O(T)$ re-prefill after every rejection round.
+% Beyond algorithmic challenges, deploying an SSM drafter is complicated by execution efficiency.
+% On GPU, Mamba2's sequential selective scan is difficult to parallelize for single-token generation, leaving the GPU underutilized during drafting.
+% On CPU, the recurrence is inherently sequential, and profiling reveals that linear projection layers account for 85\% of wall-clock time, creating a clear performance bottleneck that generic frameworks like PyTorch do not optimize for.
+Unfortunately, vanilla SSM drafters suffer from four intertwined issues.:
+(i) \emph{distribution misalignment} -- their absence of attention causes their output distribution to drift from that of the verifier, yielding low acceptance rates;
+(ii) \emph{hidden-state rollback} -- without a truncatable cache, each rejected draft requires a full re-prefill of the state across the entire current context, an operation that scales as $O(T)$ where $T$ is the length of the generated sequence so far, thereby negating any amortised benefit;
+(iii) \emph{GPU underutilization} -- Mamba's selective-scan operation is difficult to parallelise on GPU, leaving much of the device idle during drafting; and
+(iv) \emph{CPU bottleneck} -- the linear-projection layers dominate the drafter's CPU runtime, consuming roughly 85\% of the overall wall-clock time.
 
 We address all four obstacles, misalignment, rollback, GPU underutilization, and CPU bottleneck, in a unified framework.
 We present \textbf{SpecSSM}, which combines an externally pretrained Mamba2 drafter with three key innovations.
 (1)~\emph{Guided injection}: lightweight linear projections inject verifier hidden-state signals into Mamba2's state-update (\texttt{x}-branch) pathway, maneuvering the recurrent drafter toward the verifier's distribution in real time inference at a cost of only 0.3\% additional parameters and with no modification to the verifier. We demonstrate that it bridges the larger architectural gap to recurrent models and is mandatory for SSM drafters to work effectively.
 (2)~\emph{Activation replay}: we snapshot the SSM state before each draft round and replay only accepted tokens after rejection, reducing resynchronization from $O(T)$ full re-prefill to $O(K)$ replay (up to $201\times$ faster drafting at 1024-token contexts on CPU).
-(3)~\emph{CPU offloading with a custom kernel}: because the drafter is tiny, we offload it entirely to CPU, freeing all GPU memory and computing resourcesfor the verifier.
+(3)~\emph{CPU offloading with a custom kernel}: because the drafter is tiny, we offload it entirely to CPU, freeing all GPU memory and computing resources for the verifier.
 We developed a custom C++ kernel stack using AVX-512 intrinsics and INT8 quantization targets the linear-projection bottleneck, achieving $7.5\times$ speedup over na\"ive PyTorch and completing 8-token drafts in 9\,ms, which fits inside the 16\,ms GPU verification window for asynchronous pipeline overlap.
 
 Our contributions are:

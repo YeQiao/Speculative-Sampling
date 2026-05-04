@@ -1,8 +1,9 @@
-Speculative decoding accelerates large language model (LLM) inference by drafting candidate tokens with a fast model and verifying them in parallel with the target model.
-Self-drafting methods reuse verifier components but consume GPU memory, require verifier modification, and degrade out of distribution; external transformer drafters are more robust but carry quadratic attention costs.
-We present \textbf{SpecSSM}, which combines an externally pretrained Mamba2 drafter (27M and 45M backbone parameters, $44\times$ and $22\times$ smaller than LLaMA-3.2-1B) with verifier-guided hidden-state injection and full CPU offloading.
-Lightweight projections steer the recurrent drafter toward the verifier's distribution without modifying the verifier.
-\emph{Activation replay} resynchronizes the SSM state after rejection in $O(K)$ rather than $O(T)$, yielding up to $201\times$ speedup over full re-prefill.
-A custom AVX-512/INT8 CPU kernel, targeting the linear-projection bottleneck that dominates 85\% of SSM inference, completes 8-token drafts in just 9\,ms within the GPU verification window.
-Across five benchmarks with LLaMA-3.1-8B, guided Mamba2-45M achieves 2.82 mean accepted tokens per round (+85\% over pretrained) and guided Mamba2-27M achieves 2.33 (+25\%).
-Acceptance scales to \textbf{TBD} with LLaMA-3.1-70B and transfers to Gemma-4B, and our CPU-GPU pipeline achieves $2.7\times$ throughput over autoregressive decoding.
+Speculative decoding accelerates large language model inference by first drafting candidate tokens with a lightweight, fast model and then verifying them in parallel with the target model.
+Existing self-drafting methods can reduce training complexity and reuse verifier components, but consume substantial GPU memory, require verifier modifications, and struggle with out-of-distribution data; meanwhile external transformer-based drafters are more resilient but still suffer from quadratic attention costs.
+We present \textbf{SpecSSM}, which combines an externally pretrained Mamba2 drafter (27M and 45M backbone parameters, $44\times$ and $22\times$ smaller than LLaMA-3.2-1B) with a verifier-guided hidden-state injection and offloads the entire drafter computation to the CPU.
+Lightweight projection layers steer the recurrent drafter toward the verifier's distribution without modifying the verifier itself.
+Our \emph{activation replay} mechanism resynchronizes the SSM state after a rejected draft in time proportional to the number of rejected tokens $O(K)$ instead of the full sequence length $O(T)$, yielding up to a $201\times$ speedup over a full re-prefill.
+A custom AVX-512/INT8 CPU kernel targets the linear-projection bottleneck that dominates 85\% of SSM inference cost, enabling 8-token drafts to be produced in only 9\,ms, well within the GPU verification window.
+Across five independent benchmarks using LLaMA-3.1-8B, the guided Mamba2-45M drafter averages 2.82 accepted tokens per round (+85\% over the pretrained baseline), while the 27M variant averages 2.33 (+25\%).
+The acceptance rate scales to \textbf{TBD} when running with LLaMA-3.1-70B and transfers cleanly to Gemma-4B.
+Through our CPU-GPU pipeline, overall throughput rises $2.7\times$ compared to conventional autoregressive decoding.
