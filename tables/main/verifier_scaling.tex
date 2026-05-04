@@ -1,6 +1,6 @@
 \begin{table}[t]
 \centering
-\caption{Verifier-agnostic guidance: mean accepted tokens ($\bar{n}_a$) across three verifiers (greedy, $K\!=\!8$). The Mamba2-45M guided drafter is trained separately for each verifier family. 70B results use $n\!=\!12$ (quick eval); 70B-guided is forthcoming after training completes. Gemma results reflect a smaller verifier with different tokenization characteristics.}
+\caption{Verifier-agnostic guidance: mean accepted tokens ($\bar{n}_a$) across three verifiers (greedy, $K\!=\!8$). Guided drafters are trained per verifier family. 70B results use $n\!=\!12$ (quick eval); 70B-guided is forthcoming after training completes. Gemma results reflect a smaller verifier with different tokenization characteristics.}
 \label{tab:verifier_scaling}
 \vspace{0.5em}
 \resizebox{\textwidth}{!}{
@@ -9,10 +9,15 @@
 \textbf{Verifier} & \textbf{Drafter config} & \textbf{HumanEval} & \textbf{GSM8K} & \textbf{Alpaca} & \textbf{UltraChat} & \textbf{XSum} & \textbf{Mean $\bar{n}_a$} \\
 \midrule
 \multicolumn{8}{@{}l}{\emph{LLaMA-3.1-8B (32 layers, $d\!=\!4096$, $n\!=\!96$)}} \\
+\quad & 27M pretrained      & 1.49 & 2.09 & 2.64 & 1.87 & 1.18 & 1.86 \\
+\quad & 27M KD              & 1.44 & 1.83 & 2.42 & 1.63 & 0.97 & 1.66 \\
+\rowcolor{gray!15}
+\quad & \textbf{27M guided} & \textbf{2.07} & \textbf{2.91} & \textbf{2.75} & \textbf{2.20} & \textbf{1.72} & \textbf{2.33} \\
+\quad & \multicolumn{7}{l}{\emph{---}} \\
 \quad & 45M pretrained      & 1.25 & 1.83 & 2.06 & 1.55 & 0.93 & 1.52 \\
 \quad & 45M KD              & 1.16 & 1.27 & 1.79 & 1.15 & 0.62 & 1.20 \\
 \rowcolor{gray!15}
-\quad & \textbf{45M guided} & \textbf{2.45} & \textbf{3.37} & \textbf{3.42} & \textbf{2.62} & \textbf{2.23} & \textbf{2.82} \\[2pt]
+\quad & \textbf{45M guided} & \textbf{2.45} & \textbf{3.47} & \textbf{3.42} & \textbf{2.82} & \textbf{2.23} & \textbf{2.82} \\[2pt]
 \midrule
 \multicolumn{8}{@{}l}{\emph{LLaMA-3.1-70B (80 layers, $d\!=\!8192$, 8-bit quant, $n\!=\!12$)}} \\
 \quad & 27M pretrained      & 5.03 & 1.64 & 2.25 & 2.48 & 1.16 & 2.51 \\

@@ -15,4 +15,4 @@ State space models (SSMs)~\citep{gu2022efficiently,gu2023mamba} process sequence
 where the input-dependent matrices $\bar{\mathbf{A}}_t, \bar{\mathbf{B}}_t, \mathbf{C}_t$ are computed via a \emph{selective scan} over the input.
 Mamba2~\citep{dao2024transformers} introduces a multi-head structured variant with $H$ heads and head dimension $d_h$, processing the input through an \texttt{in\_proj} layer that splits into a \emph{gate} (z-branch) and a \emph{state-update} (x-branch) containing the SSM parameters $(\mathbf{B}, \mathbf{C}, \Delta)$.
 A key property for our work: unlike transformer attention, the SSM state $\mathbf{h}_t$ is $O(Nd_h)$ per layer and constant across steps, making generation memory-efficient.
-However, this recurrent state cannot be cheaply \emph{truncated} after speculative rejection, motivating our activation replay method (\S\ref{sec:method}).
+However, this recurrent state cannot be cheaply \emph{truncated} after speculative rejection, motivating us to implement activation replay method (\S\ref{sec:method}).
