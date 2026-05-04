@@ -22,11 +22,11 @@ On GPU, Mamba2's sequential selective scan is difficult to parallelize for singl
 On CPU, the recurrence is inherently sequential, and profiling reveals that linear projection layers account for 85\% of wall-clock time, creating a clear performance bottleneck that generic frameworks like PyTorch do not optimize for.
 
 We address all four obstacles, misalignment, rollback, GPU underutilization, and CPU bottleneck, in a unified framework.
-We present \textbf{SpecSSM}, which combines an externally pretrained Mamba2 drafter (27M backbone, $44\times$ smaller than LLaMA-3.2-1B) with three key innovations.
-(1)~\emph{Guided injection}: lightweight linear projections inject verifier hidden-state signals into Mamba2's state-update (\texttt{x}-branch) pathway, maneuvering the recurrent drafter toward the verifier's distribution at a cost of only 0.3\% additional parameters and with no modification to the verifier. We demonstrate that it bridges the larger architectural gap to recurrent models and is mandatory for SSM drafters to work effectively.
-(2)~\emph{Activation replay}: we snapshot the SSM state before each draft round and replay only accepted tokens after rejection, reducing resynchronization from $O(T)$ full re-prefill to $O(K)$ replay (up to $201\times$ faster at 1024-token contexts).
-(3)~\emph{CPU offloading with a custom kernel}: because the drafter is tiny ($\sim$55\,MB in FP32), we offload it entirely to CPU, freeing all GPU memory for the verifier.
-A custom C++ kernel stack using AVX-512 intrinsics and INT8 quantization targets the linear-projection bottleneck, achieving $7.5\times$ speedup over na\"ive PyTorch and completing 8-token drafts in 9\,ms, which fits inside the 16\,ms GPU verification window for asynchronous pipeline overlap.
+We present \textbf{SpecSSM}, which combines an externally pretrained Mamba2 drafter with three key innovations.
+(1)~\emph{Guided injection}: lightweight linear projections inject verifier hidden-state signals into Mamba2's state-update (\texttt{x}-branch) pathway, maneuvering the recurrent drafter toward the verifier's distribution in real time inference at a cost of only 0.3\% additional parameters and with no modification to the verifier. We demonstrate that it bridges the larger architectural gap to recurrent models and is mandatory for SSM drafters to work effectively.
+(2)~\emph{Activation replay}: we snapshot the SSM state before each draft round and replay only accepted tokens after rejection, reducing resynchronization from $O(T)$ full re-prefill to $O(K)$ replay (up to $201\times$ faster drafting at 1024-token contexts on CPU).
+(3)~\emph{CPU offloading with a custom kernel}: because the drafter is tiny, we offload it entirely to CPU, freeing all GPU memory and computing resourcesfor the verifier.
+We developed a custom C++ kernel stack using AVX-512 intrinsics and INT8 quantization targets the linear-projection bottleneck, achieving $7.5\times$ speedup over na\"ive PyTorch and completing 8-token drafts in 9\,ms, which fits inside the 16\,ms GPU verification window for asynchronous pipeline overlap.
 
 Our contributions are:
 \begin{enumerate}
