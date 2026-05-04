@@ -17,6 +17,7 @@
 set -e
 
 PYTHON=/HSC/users/qiaoye/envs/ssm_spec_py310/bin/python
+ACCELERATE=/HSC/users/qiaoye/envs/ssm_spec_py310/bin/accelerate
 export CUDA_VISIBLE_DEVICES=0,1
 export OMP_NUM_THREADS=4
 
@@ -30,19 +31,28 @@ STAGE=${1:-all}
 # ~27 hours on 2x H100 (100K steps)
 run_pretrain() {
     echo "=== Stage 1: Pretraining Mamba2-45M on FineWeb-Edu ==="
-    accelerate launch \
+    # Auto-resume from latest checkpoint if exists
+    RESUME_ARG=""
+    CKPT_DIR=/HSC/users/qiaoye/SSM_SPEC/checkpoints/mamba2-45m-pretrain
+    LATEST=$(ls -d "$CKPT_DIR"/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1)
+    if [ -n "$LATEST" ]; then
+        echo "  Resuming from $LATEST"
+        RESUME_ARG="--resume_from $LATEST"
+    fi
+    $ACCELERATE launch \
         --config_file pretrain/accelerate_config.yaml \
         -m pretrain.train \
         --config 45m \
         --data_path /HSC/users/qiaoye/SSM_SPEC/fineweb-edu-100BT \
-        --output_dir /HSC/users/qiaoye/SSM_SPEC/checkpoints/mamba2-45m-pretrain \
+        --output_dir $CKPT_DIR \
         --batch_size 48 \
         --grad_accum 4 \
         --max_length 512 \
         --lr 6e-4 \
         --warmup_steps 2000 \
         --max_steps 100000 \
-        --save_every 10000
+        --save_every 10000 \
+        $RESUME_ARG
 }
 
 # ── Stage 2: Knowledge Distillation ───────────────────────────────
@@ -54,7 +64,7 @@ run_kd() {
         echo "ERROR: Pretrained model not found at $STUDENT. Run stage 1 first."
         exit 1
     fi
-    accelerate launch \
+    $ACCELERATE launch \
         --config_file pretrain/accelerate_config.yaml \
         -m pretrain.kd \
         --student_path "$STUDENT" \
@@ -81,7 +91,14 @@ run_guide() {
         echo "ERROR: KD model not found at $KD_CKPT. Run stage 2 first."
         exit 1
     fi
-    $PYTHON -m guided_mamba.run fit --config pretrain/config_guide_45m.yaml
+    # Resume from last checkpoint if available
+    CKPT_ARG=""
+    LAST_CKPT=/HSC/users/qiaoye/SSM_SPEC/checkpoints/mamba2-45m-guided/ckpts/last.ckpt
+    if [ -f "$LAST_CKPT" ]; then
+        echo "  Resuming from $LAST_CKPT"
+        CKPT_ARG="--ckpt_path $LAST_CKPT"
+    fi
+    CUDA_VISIBLE_DEVICES=0 $PYTHON -m guided_mamba.run fit --config pretrain/config_guide_45m.yaml $CKPT_ARG
 }
 
 # =====================================================================
@@ -94,22 +111,32 @@ GEMMA_VERIFIER=google/gemma-4-E4B-it
 
 # ── Gemma Stage 1: Pretrain ───────────────────────────────────────
 # ~27 hours on 2x H100 (100K steps, same as LLaMA pipeline)
+# Gemma vocab (262K) is ~2x LLaMA (128K), so halve bsz to avoid OOM
+# and double grad_accum to keep effective batch = 384
 run_gemma_pretrain() {
     echo "=== Gemma Stage 1: Pretraining Mamba2-45M (Gemma vocab) on FineWeb-Edu ==="
-    accelerate launch \
+    RESUME_ARG=""
+    CKPT_DIR=/HSC/users/qiaoye/SSM_SPEC/checkpoints/mamba2-45m-gemma-pretrain
+    LATEST=$(ls -d "$CKPT_DIR"/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1)
+    if [ -n "$LATEST" ]; then
+        echo "  Resuming from $LATEST"
+        RESUME_ARG="--resume_from $LATEST"
+    fi
+    $ACCELERATE launch \
         --config_file pretrain/accelerate_config.yaml \
         -m pretrain.train \
         --config 45m_gemma \
         --data_path /HSC/users/qiaoye/SSM_SPEC/fineweb-edu-100BT \
         --tokenizer $GEMMA_VERIFIER \
-        --output_dir /HSC/users/qiaoye/SSM_SPEC/checkpoints/mamba2-45m-gemma-pretrain \
-        --batch_size 48 \
-        --grad_accum 4 \
+        --output_dir $CKPT_DIR \
+        --batch_size 24 \
+        --grad_accum 8 \
         --max_length 512 \
         --lr 6e-4 \
         --warmup_steps 2000 \
         --max_steps 100000 \
-        --save_every 10000
+        --save_every 10000 \
+        $RESUME_ARG
 }
 
 # ── Gemma Stage 2: Knowledge Distillation ─────────────────────────
@@ -121,7 +148,7 @@ run_gemma_kd() {
         echo "ERROR: Pretrained model not found at $STUDENT. Run gemma_pretrain first."
         exit 1
     fi
-    accelerate launch \
+    $ACCELERATE launch \
         --config_file pretrain/accelerate_config.yaml \
         -m pretrain.kd \
         --student_path "$STUDENT" \
@@ -164,7 +191,14 @@ run_gemma_guide() {
         echo "UltraChat (Gemma) not found. Preparing..."
         run_gemma_data
     fi
-    $PYTHON -m guided_mamba.run fit --config pretrain/config_guide_45m_gemma.yaml
+    # Resume from last checkpoint if available
+    CKPT_ARG=""
+    LAST_CKPT=/HSC/users/qiaoye/SSM_SPEC/checkpoints/mamba2-45m-gemma-guided/ckpts/last.ckpt
+    if [ -f "$LAST_CKPT" ]; then
+        echo "  Resuming from $LAST_CKPT"
+        CKPT_ARG="--ckpt_path $LAST_CKPT"
+    fi
+    CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $PYTHON -m guided_mamba.run fit --config pretrain/config_guide_45m_gemma.yaml $CKPT_ARG
 }
 
 case "$STAGE" in

@@ -1,4 +1,20 @@
-% Document engineering choices omitted from the main text due to space:
-% - Cache/state management choices.
-% - Attention masking and verifier input formatting.
-% - Practical constraints encountered and how they were handled.
+\paragraph{Non-compact layout.}
+We use a non-compact speculative layout where the write cursor advances by $K+1$ per round regardless of how many tokens are accepted.
+Rejected draft tokens remain in the buffer; a 2D attention mask zeros out rejected positions so the verifier never attends to stale KV entries.
+Position IDs encode semantic positions, skipping over rejected slots.
+
+\paragraph{SSM cache management.}
+Mamba2's recurrent state consists of (1) a per-layer SSM state tensor $\mathbf{h} \in \mathbb{R}^{L \times B \times H \times N \times D_h}$ and (2) a per-layer 1D convolution buffer of size $d_{\mathrm{conv}} - 1 = 3$.
+We snapshot both before each draft round and restore them after rejection, then replay accepted tokens through the recurrence.
+Snapshot memory is 8.96\,MB for Mamba2-27M at batch size 1.
+
+\paragraph{Guidance layer index correction.}
+The verifier's guidance extractor collects hidden states \emph{before} each layer processes them.
+Therefore, to capture the output of layer $\ell$, we set the extraction index to $\ell + 1$.
+For \texttt{v\_layers=[5,16,29]}, the actual extraction indices are $[6, 17, 30]$.
+We verified this correction empirically: the adjusted indices produce exact matches (diff = 0.0) with an independent hook-based extraction.
+
+\paragraph{CPU kernel compilation.}
+The custom C++ kernels require a CPU with AVX-512 support (specifically AVX-512 BW/DQ/VL for BF16 and VNNI for INT8).
+We compile with \texttt{g++ -O3 -march=native -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni -fopenmp}.
+INT8 quantization uses per-tensor symmetric quantization for both weights and activations.

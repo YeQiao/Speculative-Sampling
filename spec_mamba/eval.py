@@ -248,6 +248,18 @@ def evaluate_model(
                   f"throughput: {avg_throughput:.1f} tok/s{speedup_str}")
 
 
+def _move_to_cuda(mod: SpecMambaTrainer, sharded_verifier: bool = False):
+    """Move model to CUDA. If verifier is sharded (device_map), only move
+    drafter, guidance, and latent modules — leave verifier in place."""
+    if sharded_verifier:
+        dev = torch.device("cuda:0")
+        mod.d_base.to(dev)
+        mod.guidance_extractor.to(dev)
+        mod.latent_mod_prep.to(dev)
+    else:
+        mod.to("cuda")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate spec_mamba speculative decoding")
     parser.add_argument("--ckpt", type=str, required=False, default=None)
@@ -255,6 +267,8 @@ def main():
     parser.add_argument("--pretrained_drafter", type=str, default=None,
                         help="Path to a standalone HF Mamba2 checkpoint (no guidance). "
                              "Constructs SpecMambaTrainer with zeroed guidance.")
+    parser.add_argument("--verifier", type=str, default="/HSC/users/qiaoye/checkpoints/Llama3.1-8B-hf",
+                        help="Verifier model path (used with --pretrained_drafter)")
     parser.add_argument("--datasets", type=str, default=None)
     parser.add_argument("--out_file", type=str, default="spec_mamba/eval_results.json")
     parser.add_argument("--greedy_only", action="store_true")
@@ -269,6 +283,8 @@ def main():
                         help="Use activation replay instead of full re-prefill for drafter cache")
     parser.add_argument("--measure_ar_baseline", action="store_true",
                         help="Measure AR-only (verifier autoregressive) throughput for speedup calculation")
+    parser.add_argument("--device_map", type=str, default=None,
+                        help="device_map for verifier (e.g. 'auto' for multi-GPU 70B)")
     args = parser.parse_args()
 
     datasets = args.datasets.split(",") if args.datasets else DATASETS
@@ -284,20 +300,41 @@ def main():
 
     final_out = {}
 
+    if args.device_map:
+        SpecMambaTrainer._verifier_device_map = args.device_map
+        # Auto-detect free memory per GPU and leave headroom
+        if args.device_map == "auto":
+            import subprocess
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True,
+            )
+            max_mem = {}
+            for idx, line in enumerate(result.stdout.strip().split("\n")):
+                total, used = [int(x.strip()) for x in line.split(",")]
+                free_gb = (total - used - 4096) / 1024  # 4GB headroom
+                if free_gb > 2:
+                    max_mem[idx] = f"{max(1, int(free_gb))}GiB"
+            if max_mem:
+                print(f"  Auto max_memory: {max_mem}")
+                SpecMambaTrainer._verifier_max_memory = max_mem
+
     if args.pretrained_drafter:
         # Standalone pretrained Mamba2 (no guidance, no .ckpt)
         print("=" * 60)
         print(f"Loading pretrained drafter from: {args.pretrained_drafter}")
+        if args.device_map:
+            print(f"Verifier device_map: {args.device_map}")
         print("=" * 60)
         mod = SpecMambaTrainer(
-            verifier="/HSC/users/qiaoye/checkpoints/Llama3.1-8B-hf",
+            verifier=args.verifier,
             drafter=args.pretrained_drafter,
         )
         with torch.no_grad():
             for p in mod.latent_mod_prep.parameters():
                 p.zero_()
         mod.eval()
-        mod.to("cuda")
+        _move_to_cuda(mod, sharded_verifier=bool(args.device_map))
 
         ar_throughput = None
         if args.measure_ar_baseline:
@@ -322,7 +359,7 @@ def main():
         print("=" * 60)
         mod = load_from_ckpt(args.ckpt)
         mod.eval()
-        mod.to("cuda")
+        _move_to_cuda(mod, sharded_verifier=bool(args.device_map))
 
         # Optionally measure AR baseline throughput first
         ar_throughput = None
@@ -354,7 +391,7 @@ def main():
 
             baseline = load_baseline(hp)
             baseline.eval()
-            baseline.to("cuda")
+            _move_to_cuda(baseline, sharded_verifier=bool(args.device_map))
             evaluate_model(
                 baseline, "baseline", datasets, greedy_modes, SEEDS, final_out,
                 bsz=args.bsz, tgt_len=args.tgt_len,

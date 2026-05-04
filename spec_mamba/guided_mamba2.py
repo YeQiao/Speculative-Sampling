@@ -25,11 +25,10 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
+from transformers import Cache
 from transformers.models.mamba2.modeling_mamba2 import (
     Mamba2Block,
     Mamba2Mixer,
-    Mamba2Cache,
-    is_fast_path_available,
 )
 
 
@@ -86,7 +85,7 @@ class GuidedMamba2Mixer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        cache_params: Optional[Mamba2Cache] = None,
+        cache_params: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         guidance_deltas: Optional[torch.Tensor] = None,
@@ -165,7 +164,7 @@ class GuidedMamba2Block(nn.Module):
     def forward(
         self,
         hidden_states,
-        cache_params: Optional[Mamba2Cache] = None,
+        cache_params: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         guidance_deltas: Optional[torch.Tensor] = None,

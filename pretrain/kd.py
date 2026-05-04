@@ -24,7 +24,7 @@ import time
 
 import torch
 import torch.nn.functional as F
-from accelerate import Accelerator
+from accelerate import Accelerator, DataLoaderConfiguration
 from accelerate.utils import set_seed
 from datasets import load_dataset
 from torch.utils.data import DataLoader, IterableDataset
@@ -112,6 +112,7 @@ def train(args):
     accelerator = Accelerator(
         mixed_precision="bf16",
         gradient_accumulation_steps=args.grad_accum,
+        dataloader_config=DataLoaderConfiguration(dispatch_batches=False),
     )
 
     # ── Models ──────────────────────────────────────────────────────
@@ -156,7 +157,10 @@ def train(args):
         student.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weight_decay,
     )
     warmup = min(args.warmup_steps, args.max_steps // 10)
-    scheduler = get_cosine_schedule_with_warmup(optimizer, warmup, args.max_steps)
+    # Scale for AccelerateScheduler which steps num_processes times per optimizer step
+    sched_total = args.max_steps * accelerator.num_processes
+    sched_warmup = warmup * accelerator.num_processes
+    scheduler = get_cosine_schedule_with_warmup(optimizer, sched_warmup, sched_total)
 
     # ── Prepare ─────────────────────────────────────────────────────
     student, teacher, optimizer, loader, scheduler = accelerator.prepare(

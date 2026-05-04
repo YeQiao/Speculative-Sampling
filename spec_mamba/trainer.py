@@ -24,7 +24,6 @@ from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch import loggers
 from transformers import AutoTokenizer, AutoModelForCausalLM, DynamicCache
 
-from spec_mamba.models.llama import LlamaForCausalLM as CustomLlamaForCausalLM
 from spec_mamba.guided_mamba2 import GuidedMamba2Block
 
 PRETTY_PRINT = False
@@ -34,17 +33,20 @@ PRETTY_PRINT = False
 #  Mamba2 cache snapshot/restore utilities for activation replay
 # ---------------------------------------------------------------------------
 def snapshot_mamba2_cache(cache) -> dict:
-    """Save a deep copy of Mamba2Cache conv_states and ssm_states."""
+    """Save a deep copy of Mamba2/DynamicCache conv_states and recurrent_states."""
     return {
-        "conv_states": cache.conv_states.clone(),
-        "ssm_states": cache.ssm_states.clone(),
+        "conv_states": [layer.conv_states.clone() if layer.conv_states is not None else None for layer in cache.layers],
+        "recurrent_states": [layer.recurrent_states.clone() if layer.recurrent_states is not None else None for layer in cache.layers],
     }
 
 
 def restore_mamba2_cache(cache, snapshot: dict):
-    """Restore Mamba2Cache from a snapshot (in-place)."""
-    cache.conv_states.copy_(snapshot["conv_states"])
-    cache.ssm_states.copy_(snapshot["ssm_states"])
+    """Restore DynamicCache from a snapshot (in-place)."""
+    for i, layer in enumerate(cache.layers):
+        if snapshot["conv_states"][i] is not None:
+            layer.conv_states.copy_(snapshot["conv_states"][i])
+        if snapshot["recurrent_states"][i] is not None:
+            layer.recurrent_states.copy_(snapshot["recurrent_states"][i])
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +133,7 @@ class SpecMambaTrainer(L.LightningModule):
         verifier: str = "meta-llama/Llama-3.1-8B-Instruct",
         drafter: str = "/HSC/users/qiaoye/SSM_SPEC/checkpoints/improved-mamba-alignment/checkpoint-750",
         # Guidance extraction
-        v_layers: tuple[int, int, int] = (5, 16, 29),
+        v_layers: list[int] = [5, 16, 29],
         # Guidance application
         steer_z: bool = False,
         d_layers: str | list[int] = "all",
@@ -169,17 +171,46 @@ class SpecMambaTrainer(L.LightningModule):
     # ------------------------------------------------------------------
     #  Model loading
     # ------------------------------------------------------------------
+    # Set before __init__ to shard large verifiers (e.g. 70B) across GPUs.
+    _verifier_device_map: str | None = None
+    _verifier_max_memory: dict | None = None
+    _verifier_quantization_config: Any | None = None
+
+    def to(self, *args, **kwargs):
+        """Override to skip v_base when it is sharded via device_map."""
+        if self._verifier_device_map is not None and hasattr(self, "v_base"):
+            # Temporarily detach v_base so nn.Module.to() doesn't touch it
+            v_base = self.v_base
+            del self.v_base
+            result = super().to(*args, **kwargs)
+            self.v_base = v_base
+            return result
+        return super().to(*args, **kwargs)
+
     def _load_models(self):
-        # Verifier: use our custom LlamaForCausalLM with old-style _update_causal_mask
-        self.v_base = CustomLlamaForCausalLM.from_pretrained(
+        # Verifier: stock HF model (LLaMA or Gemma4)
+        load_kwargs: dict = dict(torch_dtype=torch.float16)
+        if self._verifier_device_map is not None:
+            load_kwargs["device_map"] = self._verifier_device_map
+            if self._verifier_max_memory is not None:
+                load_kwargs["max_memory"] = self._verifier_max_memory
+        if self._verifier_quantization_config is not None:
+            load_kwargs["quantization_config"] = self._verifier_quantization_config
+        self.v_base = AutoModelForCausalLM.from_pretrained(
             self.hparams["verifier"],
-            torch_dtype=torch.float16,
+            **load_kwargs,
         )
         for p in self.v_base.parameters():
             p.requires_grad = False
 
-        self.V_H_DIM = self.v_base.config.hidden_size
-        self.V_N_LAYERS = self.v_base.config.num_hidden_layers
+        # Gemma4 nests text config under .text_config; LLaMA has it at top level
+        v_cfg = self.v_base.config
+        if hasattr(v_cfg, "text_config"):
+            v_cfg = v_cfg.text_config
+        self.is_gemma = hasattr(self.v_base.config, "text_config")
+        self.V_H_DIM = v_cfg.hidden_size
+        self.V_N_LAYERS = v_cfg.num_hidden_layers
+        self.V_VOCAB_SIZE = v_cfg.vocab_size
 
         # Tokenizer
         self.tok = AutoTokenizer.from_pretrained(
@@ -190,7 +221,8 @@ class SpecMambaTrainer(L.LightningModule):
         if self.tok.pad_token is None:
             self.tok.pad_token = self.tok.eos_token
         self.pad_token_id = self.tok.pad_token_id
-        self.eot_id = 128009  # LLaMA 3.x <|eot_id|>
+        # End-of-turn token: LLaMA uses <|eot_id|>=128009, Gemma uses <turn|>=106
+        self.eot_id = 106 if self.is_gemma else 128009
 
         # Drafter (Mamba2)
         self.d_base = AutoModelForCausalLM.from_pretrained(
@@ -204,6 +236,12 @@ class SpecMambaTrainer(L.LightningModule):
         else:
             for p in self.d_base.parameters():
                 p.requires_grad = False
+        # Disable CUDA fast path for Mamba2: causal_conv1d_fn requires tensor
+        # strides divisible by 8. Models with in_proj_size % 8 != 0 (e.g. 45M:
+        # n_heads=20 → 2836) crash. torch_forward uses nn.Conv1d with no such
+        # restriction. Performance difference is negligible for small drafters.
+        import transformers.models.mamba2.modeling_mamba2 as _mamba2_mod
+        _mamba2_mod.is_fast_path_available = False
 
     # ------------------------------------------------------------------
     #  Guidance setup
@@ -213,13 +251,9 @@ class SpecMambaTrainer(L.LightningModule):
 
         # 1. Guidance extractor (same interface as SD²'s guidance_embd_layer)
         self.guidance_extractor = GuidanceExtractor(self.V_H_DIM, n_layers=len(self.v_layers))
-        # SD²'s LlamaModel collects hidden_states BEFORE the layer runs,
-        # so in_layer=[i] collects the INPUT to layer i = OUTPUT of layer i-1.
-        # Our checkpoint was trained with output_hidden_states[layer_idx + 1],
-        # which is the OUTPUT of layer_idx.  To match, shift each index by +1.
+        # hidden_states[i+1] = output of layer i.  To collect output of layer v,
+        # use index v+1 into the hidden_states tuple.
         self.guidance_extractor.in_layer = [v + 1 for v in self.v_layers]
-        # Attach to verifier model so it's called during forward
-        self.v_base.get_decoder().guidance_embd_layer = self.guidance_extractor
 
         # 2. Prep deltas for Mamba2 layers
         if isinstance(d_layers, str) and d_layers == "all":
@@ -244,18 +278,40 @@ class SpecMambaTrainer(L.LightningModule):
             backbone.layers[orig_layer_idx] = guided_block
 
     # ------------------------------------------------------------------
+    #  Verifier call with guidance extraction
+    # ------------------------------------------------------------------
+    def _verifier_call(self, input_ids, **kwargs):
+        """Call verifier with output_hidden_states, extract guidance, return dict.
+
+        Returns {"out": BaseModelOutputWithPast, "guide_embd": Tensor}.
+        When the verifier uses device_map (multi-GPU), output tensors are moved
+        to the guidance_extractor's device automatically.
+        """
+        out = self.v_base.get_decoder()(
+            input_ids,
+            output_hidden_states=True,
+            **kwargs,
+        )
+        # Collect hidden states at the guidance layers
+        tgt_device = self.guidance_extractor.proj.weight.device
+        guide_input = None
+        for idx in self.guidance_extractor.in_layer:
+            h = out.hidden_states[idx].to(tgt_device)
+            guide_input = h if guide_input is None else torch.cat((guide_input, h), dim=-1)
+        guide_embd = self.guidance_extractor.proj(guide_input.to(self.guidance_extractor.proj.weight.dtype))
+        # Strip hidden_states to save memory
+        out.hidden_states = None
+        return {"out": out, "guide_embd": guide_embd}
+
+    # ------------------------------------------------------------------
     #  Verifier forward (training, no cache)
     # ------------------------------------------------------------------
     def _verifier_forward(self, input_ids: torch.Tensor):
         """Run verifier, extract guidance, return (v_logits, guide_embd)."""
         with torch.no_grad():
-            v_out = self.v_base.get_decoder()(
-                input_ids,
-                compute_guidance=True,
-                return_dict=True,
-            )
+            v_out = self._verifier_call(input_ids, return_dict=True)
         guide_embd = v_out["guide_embd"]
-        v_logits = self.v_base.lm_head(v_out["out"].last_hidden_state)
+        v_logits = self.v_base.lm_head(v_out["out"].last_hidden_state).to(guide_embd.device)
         return v_logits, guide_embd
 
     # ------------------------------------------------------------------
@@ -286,14 +342,9 @@ class SpecMambaTrainer(L.LightningModule):
         cache_params=None,
         cache_position=None,
     ):
-        from transformers.models.mamba2.modeling_mamba2 import Mamba2Cache
-
         backbone = self.d_base.backbone
         if cache_params is None:
-            cache_params = Mamba2Cache(
-                backbone.config, input_ids.size(0),
-                device=input_ids.device, dtype=torch.float32,
-            )
+            cache_params = DynamicCache(config=backbone.config)
             cache_position = torch.arange(
                 0, backbone.config.conv_kernel, device=input_ids.device
             )
@@ -321,6 +372,7 @@ class SpecMambaTrainer(L.LightningModule):
     def process_batch(self, batch, compute_tvd=False):
         targets = batch["targets"]
         B, S = targets.shape
+        dev = self.d_base.backbone.embeddings.weight.device  # drafter device
 
         if "loss_mask" in batch:
             loss_mask = batch["loss_mask"].float()
@@ -331,13 +383,13 @@ class SpecMambaTrainer(L.LightningModule):
         v_logits, guide_embd = self._verifier_forward(targets)
 
         if self.pos_method == "regular":
-            offset = torch.randint(1, self.NG + 1, (1,), device=self.device)[0]
-            guide_pos = torch.arange(0, S, device=self.device) - offset
+            offset = torch.randint(1, self.NG + 1, (1,), device=dev)[0]
+            guide_pos = torch.arange(0, S, device=dev) - offset
             guide_pos = guide_pos.clamp_min_(0)
         else:
-            offset = torch.randint(0, self.NG, (1,), device=self.device)[0]
+            offset = torch.randint(0, self.NG, (1,), device=dev)[0]
             guide_pos = (
-                (torch.arange(0, S, device=self.device) - offset - 1)
+                (torch.arange(0, S, device=dev) - offset - 1)
                 // self.NG * self.NG
             ) + offset
             guide_pos = guide_pos.clamp_min_(0)
@@ -432,7 +484,7 @@ class SpecMambaTrainer(L.LightningModule):
     #  Chat template & tokenization
     # ------------------------------------------------------------------
     def prep_for_gen(self, prompts: list[str]):
-        if not hasattr(self.tok, 'chat_template') or self.tok.chat_template is None:
+        if not self.is_gemma and (not hasattr(self.tok, 'chat_template') or self.tok.chat_template is None):
             self.tok.chat_template = (
                 "{% for message in messages %}\n"
                 "  {% if (message['role'] != 'assistant') %}\n"
@@ -457,7 +509,7 @@ class SpecMambaTrainer(L.LightningModule):
             tokenizer_kwargs={"return_attention_mask": True},
             return_dict=True,
         )
-        return toks["input_ids"].to(self.device), toks["attention_mask"].to(self.device)
+        return toks["input_ids"].to(self.d_base.device), toks["attention_mask"].to(self.d_base.device)
 
     # ------------------------------------------------------------------
     #  Speculative decoding generation (follows SD² exactly)
@@ -472,8 +524,6 @@ class SpecMambaTrainer(L.LightningModule):
         mask_rejected: bool = True,
         use_activation_replay: bool = False,
     ):
-        from transformers.models.mamba2.modeling_mamba2 import Mamba2Cache
-
         B, S = input_ids.shape
         device = input_ids.device
         NG = self.NG
@@ -507,22 +557,20 @@ class SpecMambaTrainer(L.LightningModule):
 
         # ---- Verifier prefill ----
         v_pkv = DynamicCache()
-        v_out = self.v_base.get_decoder()(
+        v_out = self._verifier_call(
             sampled[:, :curr + 1],
             position_ids=position_ids[:, :curr + 1],
-            compute_guidance=True,
             past_key_values=v_pkv,
             attention_mask=attention_mask[:, :curr + 1],
             use_cache=True,
+            return_dict=True,
         )
         v_pkv = v_out["out"].past_key_values
         v_pkv.crop(curr)  # SD² fix: crop so verify re-processes at correct position
         guide = self.latent_mod_prep(v_out["guide_embd"][:, -1, None])
 
         # ---- Drafter prefill ----
-        d_cache = Mamba2Cache(
-            self.d_base.backbone.config, B, device=device, dtype=torch.float32,
-        )
+        d_cache = DynamicCache(config=self.d_base.backbone.config)
         d_cache_pos = torch.arange(0, self.d_base.backbone.config.conv_kernel, device=device)
         if curr > 0:
             prefill_deltas = self.latent_mod_prep(
@@ -600,13 +648,11 @@ class SpecMambaTrainer(L.LightningModule):
         use_activation_replay: bool = False,
     ):
         """One round of draft + verify + reject. Returns updated state."""
-        from transformers.models.mamba2.modeling_mamba2 import Mamba2Cache
-
         B = sampled.shape[0]
         NG = self.NG
         device = sampled.device
 
-        q = torch.zeros(B, NG, self.v_base.config.vocab_size, device=device)
+        q = torch.zeros(B, NG, self.V_VOCAB_SIZE, device=device)
 
         # --- Snapshot drafter cache before drafting (for activation replay) ---
         if use_activation_replay:
@@ -632,21 +678,20 @@ class SpecMambaTrainer(L.LightningModule):
             position_ids[:, curr + i + 1] = position_ids[:, curr + i] + 1
 
         # --- Verify NG+1 tokens (SD² pattern: pass attention_mask!) ---
-        v_out = self.v_base.get_decoder()(
+        v_out = self._verifier_call(
             sampled[:, curr: curr + NG + 1],
             position_ids=position_ids[:, curr: curr + NG + 1],
-            compute_guidance=True,
             return_dict=True,
             use_cache=True,
             past_key_values=v_pkv,
             attention_mask=attention_mask[:, :curr + NG + 1],
         )
-        v_logits = self.v_base.lm_head(v_out["out"].last_hidden_state)
+        v_logits = self.v_base.lm_head(v_out["out"].last_hidden_state).to(device)
         v_pkv = v_out["out"].past_key_values
 
         if self.greedy_sample:
             v_probs = torch.zeros(
-                B, NG + 1, self.v_base.config.vocab_size,
+                B, NG + 1, self.V_VOCAB_SIZE,
                 device=device, dtype=v_logits.dtype,
             )
             v_probs.scatter_(-1, v_logits.argmax(dim=-1, keepdim=True), 1.0)
@@ -744,9 +789,7 @@ class SpecMambaTrainer(L.LightningModule):
             #
             # Fix: build a compact sequence of only the unmasked tokens
             # (accepted + resampled), matching what the verifier attends to.
-            d_cache = Mamba2Cache(
-                self.d_base.backbone.config, B, device=device, dtype=torch.float32,
-            )
+            d_cache = DynamicCache(config=self.d_base.backbone.config)
             d_cache_pos = torch.arange(
                 0, self.d_base.backbone.config.conv_kernel, device=device
             )

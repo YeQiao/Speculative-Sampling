@@ -369,6 +369,54 @@ Instead of re-prefilling the drafter from scratch over the entire sequence after
 - **Total round:** 80ms (80% draft, 20% verify)
 - **Pipeline overlap:** NOT feasible — CPU draft (61ms) is 4x slower than GPU verify (15ms), so async overlap yields minimal benefit. Frame CPU offloading as **memory savings** (frees GPU VRAM for larger batch / longer KV cache), not latency hiding.
 
+#### Updated: Pipeline IS Feasible with INT8 (2026-04-29)
+
+With INT8 VNNI kernel (16 threads), the bottleneck flips:
+- **Draft (CPU, K=8):** 9 ms (was 61ms) — **now faster than GPU verify!**
+- **Verify (GPU LLaMA-8B, 8 tokens):** 16 ms
+- **Verify (GPU Gemma-4-E4B, 8 tokens):** TBD (drafter still training, no GPU measurement)
+
+**Pipelined throughput (overlapped CPU draft + GPU verify):**
+
+| Verifier | K | Accept | Round (ms) | tok/s | vs AR | Speedup |
+|----------|---|--------|-----------|-------|-------|---------|
+| LLaMA-8B | 4 | 2.33 | 14.5 | 230 | 76 | **3.0x** |
+| LLaMA-8B | 8 | 2.33 | 16.5 | 202 | 76 | **2.7x** |
+| LLaMA-8B | 12 | 2.33 | 19.0 | 175 | 76 | **2.3x** |
+| Gemma-4B | 4 | TBD | TBD | TBD | TBD | TBD |
+| Gemma-4B | 8 | TBD | TBD | TBD | TBD | TBD |
+
+Assumptions: Perfect pipeline overlap (CPU drafts while GPU verifies), 0.5ms synchronization overhead. Masked acceptance rates from eval.
+
+**Why this works now:**
+- Old: CPU draft=61ms ≫ GPU verify=16ms → CPU is bottleneck, overlap useless
+- New: CPU draft=9ms < GPU verify=16ms → **GPU is bottleneck, CPU draft is free**
+- Round time ≈ verify time (draft is hidden) → throughput ≈ (accept+1)/verify_time
+- Even sequential (no overlap): 132 tok/s = **1.75x vs AR** for LLaMA-8B
+
+**Comparison: On-GPU vs CPU-offloaded drafting (LLaMA-8B, K=8):**
+
+| Config | Draft (ms) | Verify (ms) | Round (ms) | tok/s | vs AR |
+|--------|-----------|-------------|-----------|-------|-------|
+| Mamba2-65M on GPU (old) | 121 | 16 | 138 | 24 | 0.32x |
+| LLaMA-1B on GPU | 65 | 16 | 82 | 46 | 0.60x |
+| CPU BF16 sequential | 28 | 16 | 45 | 74 | 0.98x |
+| **CPU INT8 sequential** | **9** | **16** | **25** | **132** | **1.75x** |
+| **CPU INT8 overlapped** | **9** | **16** | **16.5** | **202** | **2.66x** |
+
+**Sensitivity (with overlap):** Acceptance rate needed for target speedup:
+- 1.5x over AR: need accept ≥ 0.9 ✓ (we have 2.33)
+- 2.0x over AR: need accept ≥ 1.5 ✓ (we have 2.33)
+- 3.0x over AR: need accept ≥ 4.0 △ (would need better drafter or larger K)
+
+**Batched serving (the real win):** With bsz=4-8, AR throughput drops to 30-45 tok/s/seq → CPU-offloaded spec dec provides 2.2-2.4x speedup per sequence while freeing GPU VRAM for more concurrent requests.
+
+**Caveats:**
+1. Pipeline overlap requires async CPU-GPU communication (CUDA streams + Python threading)
+2. After rejection, drafter must be re-synced (activation replay: ~40ms for CPU snapshot+restore+replay of ~2 tokens)
+3. Guidance extraction requires partial GPU verifier forward → add ~2ms per round for guidance transfer
+4. Gemma-4-E4B: AR latency unmeasured (GPU occupied for training), drafter acceptance TBD (training in progress)
+
 ### Note on Equivalence
 Activation replay produces a slightly different drafter state than full re-prefill because the non-compact layout leaves rejected tokens in the buffer, and full re-prefill processes them. Activation replay is arguably more correct (drafter never sees rejected tokens).
 
@@ -389,6 +437,108 @@ Activation replay produces a slightly different drafter state than full re-prefi
 - Single-step: 7.3ms (competitive with GPU's 8.0ms!)
 - 8-token draft: 57ms (viable for async overlap with GPU verification)
 - **Verified correct** against HF reference (2026-04-21): 16-step autoregressive generation with identical inputs produces matching top-1 tokens at every step, max logit diff ~4e-6 (float32 precision)
+
+### Fused BF16 Forward (Added 2026-04-29)
+- `spec_mamba/cpu_kernels/fused_forward.cpp`: Entire 16-layer forward + LM head in a single C++ call
+- `FusedCPUMamba2Model` class in `cpu_mamba2.py`
+- **BF16 weights** for memory-bound ops (embed, in_proj, out_proj, LM head): halves memory reads
+- **FP32 compute** for accuracy-critical paths (SSM state, norms)
+- Uses AVX-512 BF16 dot product (`vdpbf16ps`) when available, plus AVX-512 BF16-to-FP32 conversion fallback
+- Weight size: 186MB BF16 + 0.7MB FP32 (vs 373MB all-FP32)
+
+**Performance (B=1, Intel Xeon 8562Y+):**
+
+| Threads | Old FP32 (ms) | Fused BF16 (ms) | Speedup |
+|---------|--------------|-----------------|---------|
+| 1 | 35.2 | 18.6 | 1.89x |
+| 4 | 11.7 | 5.8 | 2.02x |
+| 8 | 9.3 | 3.7 | 2.47x |
+| 16 | 7.7 | 2.8 | 2.77x |
+
+**8-token draft (8 threads): 32ms (4.0 ms/token)** — was 57ms, now **1.78x faster**
+
+#### Conv+SiLU Vectorization (2026-04-29)
+
+The conv1d cached step was further optimized:
+- **Transposed layout**: Conv weights/states stored as `[K, conv_dim]` instead of `[conv_dim, K]` — enables contiguous `memcpy` for state shifts and contiguous AVX-512 loads for dot products
+- **AVX-512 FMA unrolled**: 4 FMA operations over 16 channels at once (K=4 fully unrolled)
+- **Vectorized SiLU**: Fused bias-add + SiLU activation in the same AVX-512 loop
+- **`-ffast-math`**: Enables compiler SVML vectorization of all `exp()` calls
+
+Performance after conv optimization (includes `-ffast-math` for all SiLU/exp calls):
+
+| Threads | Latency (ms) | 8-tok draft (ms) |
+|---------|-------------|------------------|
+| 1 | 17.7 | 141 |
+| 4 | 6.3 | 50 |
+| 8 | 3.7 | 30 |
+| 16 | 2.4 | 20 |
+
+The conv step itself improved ~2-3x, but since conv was only 8.5% of total time (77% is memory-bandwidth-bound GEMV), overall improvement is ~15% at high thread counts. Further gains require weight pruning/quantization or HBM.
+
+**Correctness**: 16-step generation with identical tokens produces matching top-1 at every step. Max logit diff ~0.035 (expected BF16 quantization noise), stays bounded.
+
+#### End-to-End Generation Benchmark (2026-04-29)
+
+Compared three implementations: (1) HF naive PyTorch, (2) CPUMamba2Model (FP32 + C++ SSM kernel), (3) FusedCPUMamba2Model (BF16 fused forward). All produce identical greedy tokens. Intel Xeon 8562Y+.
+
+**Throughput (tok/s) — higher is better:**
+
+| Threads | HF Naive | CPU FP32 | Fused BF16 | Fused/HF Speedup |
+|---------|----------|----------|------------|------------------|
+| 4 | 86 | 93 | 215 | **2.5x** |
+| 8 | 110 | 118 | 317 | **2.9x** |
+| 16 | 132 | 137 | 453 | **3.4x** |
+
+**Generation latency (ms) — 8 tokens (speculative draft):**
+
+| Threads | HF Naive | CPU FP32 | Fused BF16 | Fused/HF Speedup |
+|---------|----------|----------|------------|------------------|
+| 4 | 93 | 81 | 35 | **2.7x** |
+| 8 | 80 | 72 | 25 | **3.2x** |
+| 16 | 55 | 53 | 17 | **3.3x** |
+
+**Key findings**:
+- CPU FP32 model (C++ SSM kernel only) provides marginal speedup (1.05-1.15x) — the SSM kernel is 10x faster but only saves ~1.4ms/step because SSM was 22.8% of a 11.3ms step
+- Fused BF16 forward provides **2.5-3.4x end-to-end speedup** by eliminating Python dispatch (48% overhead) AND halving memory bandwidth (BF16 weights)
+- At 8 threads, fused model achieves **317 tok/s** (3.1 ms/token) — viable for real-time speculative draft generation
+- The fused model on 8 CPU threads (317 tok/s) **exceeds the HF model on 16 threads** (132 tok/s)
+
+#### INT8 Weight-Only Quantization (Added 2026-04-29)
+
+Further 2x memory bandwidth reduction using AVX-512 VNNI (`vpdpbusd`):
+- `Int8FusedCPUMamba2Model` in `cpu_mamba2.py`
+- Per-row symmetric INT8 quantization (no calibration needed)
+- Weights: INT8 (embed, in_proj, out_proj). Activations: FP32 (quantized to UINT8 on-the-fly per GEMV call)
+- VNNI dot product: accumulate 64 INT8 pairs per instruction (16 lanes × 4 pairs)
+- Bias correction for UINT8 shift: precompute per-row sum for `128 * row_sum` term
+- Conv weights and SSM state remain FP32 (accuracy-critical, tiny memory footprint)
+
+**Model size:** 88.8 MB INT8 + 2.0 MB FP32 (vs 186 MB BF16, vs 373 MB FP32)
+
+**Correctness:** 32/32 greedy tokens match BF16 output. Max logit diff 0.39 (vs BF16 reference). Top-5 tokens nearly identical. For speculative drafting, occasional disagreement is free — verifier rejects at no quality cost.
+
+**Performance (B=1, Intel Xeon 8562Y+):**
+
+| Threads | HF Naive (ms) | BF16 Fused (ms) | INT8 Fused (ms) | INT8 tok/s | vs HF | vs BF16 |
+|---------|--------------|-----------------|-----------------|------------|-------|---------|
+| 4 | 12.8 | 6.0 | **2.3** | 442 | 5.7x | 2.7x |
+| 8 | 9.9 | 3.5 | **1.5** | 674 | 6.7x | 2.4x |
+| 16 | 8.1 | 2.4 | **1.1** | 924 | 7.5x | 2.2x |
+
+**8-token draft latency:**
+
+| Threads | HF Naive | BF16 Fused | INT8 Fused |
+|---------|----------|------------|------------|
+| 4 | 102 ms | 48 ms | **18 ms** |
+| 8 | 79 ms | 28 ms | **12 ms** |
+| 16 | 65 ms | 19 ms | **9 ms** |
+
+**Key findings:**
+- INT8 achieves **924 tok/s at 16 threads** (~1.08 ms/token) — approaching GPU single-step latency
+- 8-token draft in **12 ms at 8 threads** is fast enough for real-time overlapping with GPU verification (~16ms)
+- No calibration needed: tiny 65M model has well-behaved weights (absmax < 2.0)
+- Total optimization stack: 7.5x over naive PyTorch (eliminate dispatch + BF16 + INT8 + VNNI + conv vectorize)
 
 ### Bug Fix: `_rms_norm_with_gate` Order (Fixed 2026-04-21)
 

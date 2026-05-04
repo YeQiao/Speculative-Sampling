@@ -1,19 +1,27 @@
 \begin{table}[t]
 \centering
-\caption{Speculative decoding results with LLaMA-3.1-8B verifier. $\bar{n}_a$: average accepted tokens per speculation round (out of $K\!=\!8$). All results use greedy decoding, rejection masking, and 96 samples per dataset.}
+\caption{Speculative decoding results with LLaMA-3.1-8B verifier (greedy, $K\!=\!8$, $n\!=\!96$). $\bar{n}_a$: average accepted tokens per round. $\bar{n}_c$: average committed tokens per round ($\bar{n}_c = \bar{n}_a + 1$). ``Guided'' denotes verifier hidden-state injection into the SSM x-branch. All Mamba2 drafters share the verifier's 66M embedding layer; backbone params listed are SSM layers only.}
 \label{tab:main}
 \vspace{0.5em}
 \resizebox{\textwidth}{!}{
-\begin{tabular}{@{}llcccccc@{}}
+\begin{tabular}{@{}llccccccc@{}}
 \toprule
-\textbf{Drafter} & \textbf{Params} & \textbf{HumanEval} & \textbf{GSM8K} & \textbf{Alpaca} & \textbf{UltraChat} & \textbf{XSum} & \textbf{Mean $\bar{n}_a$} \\
+\textbf{Drafter} & \textbf{Backbone} & \textbf{HumanEval} & \textbf{GSM8K} & \textbf{Alpaca} & \textbf{UltraChat} & \textbf{XSum} & \textbf{Mean $\bar{n}_a$} & \textbf{Mean $\bar{n}_c$} \\
 \midrule
-LLaMA-3.2-1B          & 1.2B  & 4.88 & 2.60 & 4.35 & 2.73 & 2.39 & \textbf{3.39} \\
+\multicolumn{9}{@{}l}{\emph{Transformer baseline}} \\
+LLaMA-3.2-1B          & 1.2B  & 4.88 & 2.60 & 4.35 & 2.73 & 2.39 & \textbf{3.39} & \textbf{4.39} \\
 \midrule
-Mamba2-27M (pretrained)    & 27M & 1.49 & 2.09 & 2.64 & 1.87 & 1.18 & 1.86 \\
-Mamba2-27M (KD, no guide)  & 27M & 1.44 & 1.83 & 2.42 & 1.63 & 0.97 & 1.66 \\
+\multicolumn{9}{@{}l}{\emph{Mamba2-27M (16 layers, hidden 512)}} \\
+\quad Pretrained              & 27M & 1.49 & 2.09 & 2.64 & 1.87 & 1.18 & 1.86 & 2.86 \\
+\quad KD (guide zeroed)       & 27M & 1.44 & 1.83 & 2.42 & 1.63 & 0.97 & 1.66 & 2.66 \\
 \rowcolor{gray!15}
-\textbf{Mamba2-27M (guided)}  & \textbf{27M} & \textbf{2.07} & \textbf{2.91} & \textbf{2.75} & \textbf{2.20} & \textbf{1.72} & \textbf{2.33} \\
+\quad \textbf{Guided}         & \textbf{27M} & \textbf{2.07} & \textbf{2.91} & \textbf{2.75} & \textbf{2.20} & \textbf{1.72} & \textbf{2.33} & \textbf{3.33} \\
+\midrule
+\multicolumn{9}{@{}l}{\emph{Mamba2-45M (18 layers, hidden 640)}} \\
+\quad Pretrained              & 45M & 1.25 & 1.83 & 2.06 & 1.55 & 0.93 & 1.52 & 2.52 \\
+\quad KD (guide zeroed)       & 45M & 1.16 & 1.27 & 1.79 & 1.15 & 0.62 & 1.20 & 2.20 \\
+\rowcolor{gray!15}
+\quad \textbf{Guided}         & \textbf{45M} & \textbf{2.45} & \textbf{3.37} & \textbf{3.42} & \textbf{2.62} & \textbf{2.23} & \textbf{2.82} & \textbf{3.82} \\
 \bottomrule
 \end{tabular}
 }

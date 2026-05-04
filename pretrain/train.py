@@ -79,7 +79,11 @@ def train(args):
 
     # ── Model ───────────────────────────────────────────────────────
     cfg = CONFIGS[args.config]
-    model = Mamba2ForCausalLM(cfg)
+    if args.resume_from:
+        accelerator.print(f"Resuming from {args.resume_from}")
+        model = Mamba2ForCausalLM.from_pretrained(args.resume_from)
+    else:
+        model = Mamba2ForCausalLM(cfg)
     n_params = sum(p.numel() for p in model.parameters())
     n_emb = cfg.vocab_size * cfg.hidden_size
     accelerator.print(
@@ -118,7 +122,12 @@ def train(args):
 
     total_steps = args.max_steps
     warmup_steps = min(args.warmup_steps, total_steps // 10)
-    scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+    # AccelerateScheduler calls scheduler.step() num_processes times per optimizer
+    # step (because it assumes dataloader batch was scaled by num_processes).
+    # Compensate by scaling total_steps so the cosine cycle spans all training steps.
+    sched_total = total_steps * accelerator.num_processes
+    sched_warmup = warmup_steps * accelerator.num_processes
+    scheduler = get_cosine_schedule_with_warmup(optimizer, sched_warmup, sched_total)
 
     # ── Accelerate prepare ──────────────────────────────────────────
     model, optimizer, loader, scheduler = accelerator.prepare(model, optimizer, loader, scheduler)
@@ -128,7 +137,25 @@ def train(args):
     accelerator.print(f"Batch/GPU={args.batch_size}  grad_accum={args.grad_accum}  "
                        f"effective_batch={args.batch_size * accelerator.num_processes * args.grad_accum}")
 
-    global_step = 0
+    # ── Resume from checkpoint ──────────────────────────────────────
+    resume_step = 0
+    if args.resume_from:
+        state_file = os.path.join(args.resume_from, "training_state.json")
+        if os.path.exists(state_file):
+            with open(state_file) as f:
+                state = json.load(f)
+            resume_step = state.get("global_step", 0)
+        else:
+            # Infer step from checkpoint dir name (e.g. checkpoint-20000)
+            basename = os.path.basename(args.resume_from.rstrip("/"))
+            if basename.startswith("checkpoint-"):
+                resume_step = int(basename.split("-")[1])
+        if resume_step > 0:
+            accelerator.print(f"Resuming from step {resume_step}, fast-forwarding scheduler...")
+            for _ in range(resume_step):
+                scheduler.step()
+
+    global_step = resume_step
     running_loss = 0.0
     log_interval = args.log_every
     save_interval = args.save_every
@@ -235,6 +262,8 @@ def main():
     parser.add_argument("--log_every", type=int, default=50)
     parser.add_argument("--save_every", type=int, default=10_000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--resume_from", type=str, default=None,
+                        help="Resume from a checkpoint directory")
     args = parser.parse_args()
     train(args)
 

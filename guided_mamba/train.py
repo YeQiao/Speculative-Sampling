@@ -258,14 +258,23 @@ class GuidedMambaTrainer(L.LightningModule):
         backbone = self.d_base.backbone
         hidden_states = backbone.embeddings(input_ids)
 
-        for block in backbone.layers:
-            if isinstance(block, GuidedMamba2Block):
-                hidden_states = block(
-                    hidden_states,
-                    guidance_deltas=guidance_deltas,
-                )
-            else:
-                hidden_states = block(hidden_states)
+        # Force train mode so Mamba2 uses the fused kernel path.
+        # The unfused (eval) path hits a causal_conv1d stride alignment bug
+        # when proj_dim % 8 != 0 (e.g. 2836 for 45M config).
+        # Mamba2 has no dropout/batchnorm so train vs eval is otherwise identical.
+        was_training = backbone.training
+        backbone.train()
+        try:
+            for block in backbone.layers:
+                if isinstance(block, GuidedMamba2Block):
+                    hidden_states = block(
+                        hidden_states,
+                        guidance_deltas=guidance_deltas,
+                    )
+                else:
+                    hidden_states = block(hidden_states)
+        finally:
+            backbone.train(was_training)
 
         hidden_states = backbone.norm_f(hidden_states)
         d_logits = self.d_base.lm_head(hidden_states.to(self.d_base.lm_head.weight.dtype))

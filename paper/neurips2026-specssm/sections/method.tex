@@ -1,5 +1,20 @@
 We describe the three components of SpecSSM: (1)~the guided SSM drafter architecture, (2)~the generation loop with the activation replay resynchronization method, and (3)~CPU offloading of the drafter.
-% Figure 1 (architecture overview): to be generated separately
+Figure~\ref{fig:architecture} provides an overview of the complete system.
+
+\begin{figure}[t]
+  \centering
+  % TODO: Replace with hand-drawn/TikZ architecture diagram
+  \fbox{\parbox{0.9\textwidth}{\centering\vspace{2em}
+  \textbf{Architecture Overview (to be drawn)}\\[0.5em]
+  \small
+  Left: Verifier (LLaMA on GPU) $\to$ GuidanceExtractor (concat layers 5, 16, 29) $\to$ PrepMambaDeltas $\to$ per-layer $\Delta_\ell$\\
+  Center: Mamba2 drafter (on CPU) with x-branch delta injection at each layer\\
+  Right: Speculative decoding loop: Draft $K$ tokens $\to$ Verify in batch $\to$ Accept/Reject $\to$ Activation Replay\\
+  Bottom: CPU-GPU pipeline timeline (9\,ms draft $\subset$ 16\,ms verify window)
+  \vspace{2em}}}
+  \caption{SpecSSM architecture. The verifier extracts hidden states from selected layers, which are projected into per-layer additive deltas and injected into the Mamba2 drafter's x-branch. After speculative rejection, activation replay resynchronizes the SSM state in $O(K)$ time. The drafter runs on CPU with a custom INT8 kernel while the verifier occupies the GPU.}
+  \label{fig:architecture}
+\end{figure}
 
 \subsection{Guided SSM Drafter}
 \label{sec:guided}
@@ -67,6 +82,31 @@ Specifically, after the verifier accepts $n_a$ of $K$ draft tokens, we:
 This produces a state that is \emph{bit-identical} to what would result from never having drafted the rejected tokens, in $O(n_a)$ time rather than $O(T)$ for full re-prefill (where $T$ is the total sequence length).
 On CPU, where single-step latency is $\sim$7\,ms, this difference is dramatic: at 1024-token context, re-prefill costs 8.0\,s while replay costs 40\,ms ($201\times$ speedup, Table~\ref{tab:replay}).
 On GPU the benefit is less pronounced since the model is small enough for fast parallel re-prefill ($\sim$16\,ms regardless of context length).
+
+Algorithm~\ref{alg:specssm} summarizes the full SpecSSM generation loop with activation replay.
+
+\begin{algorithm}[t]
+\caption{SpecSSM: Speculative decoding with guided SSM drafter and activation replay.}
+\label{alg:specssm}
+\begin{algorithmic}[1]
+\REQUIRE Verifier $p_\theta$ (GPU), guided drafter $q_\phi$ (CPU), prompt $\mathbf{x}_{1:n}$, lookahead $K$
+\STATE Prefill: run $p_\theta(\mathbf{x}_{1:n})$, extract guidance $\mathbf{g} \gets \textsc{ExtractGuidance}(p_\theta)$
+\STATE Prefill: run $q_\phi(\mathbf{x}_{1:n-1})$ with zero deltas to warm SSM state $\mathbf{h}$
+\WHILE{not done}
+  \STATE $\mathbf{h}_{\mathrm{snap}} \gets \mathbf{h}$ \COMMENT{Snapshot SSM state (8.96\,MB)}
+  \STATE $\boldsymbol{\Delta} \gets \textsc{PrepDeltas}(\mathbf{g})$ \COMMENT{Project guidance to per-layer deltas}
+  \FOR{$k = 1$ \TO $K$}
+    \STATE $\hat{x}_k \sim q_\phi(\cdot \mid \mathbf{h}, \boldsymbol{\Delta})$ \COMMENT{Draft one token with guidance (CPU)}
+  \ENDFOR
+  \STATE $\mathbf{p}_{1:K+1} \gets p_\theta(\hat{x}_{1:K} \mid \text{mask})$ \COMMENT{Verify all drafts in one pass (GPU)}
+  \STATE $n_a \gets \textsc{RejectSample}(\mathbf{p}, \mathbf{q}, \hat{x}_{1:K})$ \COMMENT{Accept prefix, resample at rejection}
+  \STATE $\mathbf{h} \gets \mathbf{h}_{\mathrm{snap}}$ \COMMENT{Restore clean state}
+  \STATE Replay: run $q_\phi([x_{\mathrm{accepted}_1}, \ldots, x_{\mathrm{accepted}_{n_a}}, x_{\mathrm{resample}}])$ from $\mathbf{h}$ \COMMENT{$O(n_a)$ replay}
+  \STATE $\mathbf{g} \gets \textsc{ExtractGuidance}(p_\theta, \text{position}=n_a)$ \COMMENT{Fresh guidance}
+  \STATE Update cursor, zero rejected positions in attention mask
+\ENDWHILE
+\end{algorithmic}
+\end{algorithm}
 
 \subsection{CPU Offloading}
 \label{sec:cpu}

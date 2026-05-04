@@ -427,3 +427,365 @@ def estimate_memory_mb(config) -> float:
     )
     total_params = n_layers * per_layer + hidden * config.vocab_size * 2  # embed + lm_head
     return total_params * 4 / (1024 * 1024)
+
+
+class FusedCPUMamba2Model:
+    """Fully fused C++ Mamba2 single-step forward with BF16 weights.
+
+    Runs the entire 16-layer forward + LM head in a single C++ call,
+    eliminating Python/PyTorch dispatch overhead. Uses BF16 weights
+    for memory-bandwidth-bound operations (embed, in_proj, out_proj, LM head)
+    while keeping SSM state and norms in FP32.
+
+    For B=1 only. Falls back to CPUMamba2Model for batched inference.
+    """
+
+    def __init__(self, hf_model):
+        """Pack all weights into flat tensors for C++ consumption."""
+        backbone = hf_model.backbone
+        self.config = backbone.config
+        n_layers = backbone.config.num_hidden_layers
+        hidden = backbone.config.hidden_size
+        mixer0 = backbone.layers[0].mixer
+
+        # Architecture dims
+        self.hidden_size = hidden
+        self.d_inner = mixer0.intermediate_size
+        self.conv_dim = mixer0.conv_dim
+        self.n_heads = mixer0.num_heads
+        self.head_dim = mixer0.head_dim
+        self.state_size = mixer0.ssm_state_size
+        self.n_groups = mixer0.n_groups
+        self.conv_kernel = backbone.config.conv_kernel
+        self.n_layers = n_layers
+        self.time_step_limit = mixer0.time_step_limit
+
+        # Projection layout
+        proj_size = mixer0.in_proj.weight.shape[0]
+        self.d_mlp = (proj_size - 2 * self.d_inner
+                      - 2 * self.n_groups * self.state_size - self.n_heads) // 2
+        self.proj_size = proj_size
+
+        # Shared embed/LM-head weight → BF16
+        self.embed_weight_bf16 = backbone.embeddings.weight.to(torch.bfloat16).contiguous().cpu()
+
+        # Final norm weight (FP32)
+        self.norm_f_weight = backbone.norm_f.weight.float().contiguous().cpu()
+
+        # Pack per-layer weights into [n_layers, ...] tensors
+        self.layer_norm_weights = torch.stack(
+            [b.norm.weight.float().contiguous() for b in backbone.layers]).cpu()
+        self.layer_in_proj_bf16 = torch.stack(
+            [b.mixer.in_proj.weight.to(torch.bfloat16).contiguous() for b in backbone.layers]).cpu()
+        self.layer_in_proj_bias = torch.stack(
+            [b.mixer.in_proj.bias.float().contiguous() if b.mixer.in_proj.bias is not None
+             else torch.zeros(proj_size) for b in backbone.layers]).cpu()
+        self.layer_conv_weight = torch.stack(
+            [b.mixer.conv1d.weight.squeeze(1).float().t().contiguous() for b in backbone.layers]).cpu()
+            # ^ Transposed: HF gives [conv_dim, K], we store [K, conv_dim] for vectorized access
+        self.layer_conv_bias = torch.stack(
+            [b.mixer.conv1d.bias.float().contiguous() if b.mixer.use_conv_bias
+             else torch.zeros(self.conv_dim) for b in backbone.layers]).cpu()
+        self.layer_A_log = torch.stack(
+            [b.mixer.A_log.float().contiguous() for b in backbone.layers]).cpu()
+        self.layer_D = torch.stack(
+            [b.mixer.D.float().contiguous() for b in backbone.layers]).cpu()
+        self.layer_dt_bias = torch.stack(
+            [b.mixer.dt_bias.float().contiguous() for b in backbone.layers]).cpu()
+        self.layer_ssm_norm_weight = torch.stack(
+            [b.mixer.norm.weight.float().contiguous() for b in backbone.layers]).cpu()
+        self.layer_out_proj_bf16 = torch.stack(
+            [b.mixer.out_proj.weight.to(torch.bfloat16).contiguous() for b in backbone.layers]).cpu()
+        self.layer_out_proj_bias = torch.stack(
+            [b.mixer.out_proj.bias.float().contiguous() if b.mixer.out_proj.bias is not None
+             else torch.zeros(hidden) for b in backbone.layers]).cpu()
+
+        # Load the fused C++ module
+        from spec_mamba.cpu_kernels import get_fused_forward
+        self._fused_mod = get_fused_forward()
+
+        total_bf16_mb = (self.embed_weight_bf16.numel() + self.layer_in_proj_bf16.numel()
+                         + self.layer_out_proj_bf16.numel()) * 2 / 1e6
+        total_fp32_mb = sum(t.numel() * 4 for t in [
+            self.norm_f_weight, self.layer_norm_weights, self.layer_in_proj_bias,
+            self.layer_conv_weight, self.layer_conv_bias, self.layer_A_log,
+            self.layer_D, self.layer_dt_bias, self.layer_ssm_norm_weight,
+            self.layer_out_proj_bias]) / 1e6
+        print(f"[FusedCPUMamba2Model] Initialized: {n_layers} layers, "
+              f"BF16 weights={total_bf16_mb:.1f}MB, FP32 weights={total_fp32_mb:.1f}MB")
+
+    def create_cache(self, batch_size: int = 1):
+        """Create cache tensors for fused forward. B=1 only."""
+        assert batch_size == 1, "FusedCPUMamba2Model only supports B=1"
+        conv_states = torch.zeros(
+            self.n_layers, self.conv_kernel, self.conv_dim, dtype=torch.float32)
+            # ^ Transposed layout: [n_layers, K, conv_dim] for vectorized conv step
+        ssm_states = torch.zeros(
+            self.n_layers, self.n_heads, self.head_dim, self.state_size, dtype=torch.float32)
+        return conv_states, ssm_states
+
+    def forward_step(self, token_id: int, conv_states: torch.Tensor, ssm_states: torch.Tensor,
+                      guidance_deltas: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Single-step forward returning logits [1, vocab_size].
+
+        Args:
+            guidance_deltas: Optional FP32 [n_layers, d_inner] tensor.
+                Injected into x-branch after in_proj. Pass empty tensor or None to skip.
+        """
+        if guidance_deltas is None:
+            guidance_deltas = torch.empty(0, dtype=torch.float32)
+        return self._fused_mod.fused_mamba2_step(
+            token_id,
+            self.embed_weight_bf16,
+            self.norm_f_weight,
+            self.layer_norm_weights,
+            self.layer_in_proj_bf16,
+            self.layer_in_proj_bias,
+            self.layer_conv_weight,
+            self.layer_conv_bias,
+            self.layer_A_log,
+            self.layer_D,
+            self.layer_dt_bias,
+            self.layer_ssm_norm_weight,
+            self.layer_out_proj_bf16,
+            self.layer_out_proj_bias,
+            conv_states,
+            ssm_states,
+            self.n_layers,
+            self.hidden_size,
+            self.d_inner,
+            self.conv_dim,
+            self.n_heads,
+            self.head_dim,
+            self.state_size,
+            self.n_groups,
+            self.conv_kernel,
+            self.time_step_limit[0],
+            self.time_step_limit[1],
+            self.d_mlp,
+            self.proj_size,
+            guidance_deltas,
+        )
+
+    def forward_step_tensor(self, token_ids: torch.Tensor, conv_states: torch.Tensor, ssm_states: torch.Tensor,
+                            guidance_deltas: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Wrapper accepting [B=1, 1] tensor input for API compatibility."""
+        token_id = token_ids.item()
+        return self.forward_step(token_id, conv_states, ssm_states, guidance_deltas)
+
+    def prefill(self, token_ids: torch.Tensor, conv_states: torch.Tensor, ssm_states: torch.Tensor) -> torch.Tensor:
+        """Process prompt tokens one at a time (no guidance during prefill)."""
+        S = token_ids.shape[1]
+        logits = None
+        for t in range(S):
+            logits = self.forward_step(token_ids[0, t].item(), conv_states, ssm_states)
+        return logits
+
+
+class Int8FusedCPUMamba2Model:
+    """INT8 weight-only quantized Mamba2 forward — ~2x less memory bandwidth.
+
+    Same fused C++ forward as FusedCPUMamba2Model but with INT8 weights
+    for embed/LM-head, in_proj, and out_proj. Uses AVX-512 VNNI for
+    native INT8 dot products. Conv weights and SSM state remain FP32.
+
+    For B=1 only. No calibration needed — uses simple per-channel absmax.
+    """
+
+    @staticmethod
+    def _quantize_per_row(w_fp32):
+        """Symmetric per-row INT8 quantization.
+        Returns: (w_int8 [M,K], scale [M], row_sum [M])
+        """
+        # Per-row absmax
+        absmax = w_fp32.abs().max(dim=1).values.clamp(min=1e-8)
+        scale = absmax / 127.0  # [M]
+        # Quantize
+        w_int8 = (w_fp32 / scale.unsqueeze(1)).round().clamp(-128, 127).to(torch.int8)
+        # Row sum (for uint8 bias correction in VNNI)
+        row_sum = w_int8.to(torch.int32).sum(dim=1).to(torch.int32)
+        return w_int8, scale, row_sum
+
+    def __init__(self, hf_model):
+        """Pack all weights into INT8 tensors for C++ consumption."""
+        backbone = hf_model.backbone
+        self.config = backbone.config
+        n_layers = backbone.config.num_hidden_layers
+        hidden = backbone.config.hidden_size
+        mixer0 = backbone.layers[0].mixer
+
+        # Architecture dims
+        self.hidden_size = hidden
+        self.d_inner = mixer0.intermediate_size
+        self.conv_dim = mixer0.conv_dim
+        self.n_heads = mixer0.num_heads
+        self.head_dim = mixer0.head_dim
+        self.state_size = mixer0.ssm_state_size
+        self.n_groups = mixer0.n_groups
+        self.conv_kernel = backbone.config.conv_kernel
+        self.n_layers = n_layers
+        self.time_step_limit = mixer0.time_step_limit
+
+        proj_size = mixer0.in_proj.weight.shape[0]
+        self.d_mlp = (proj_size - 2 * self.d_inner
+                      - 2 * self.n_groups * self.state_size - self.n_heads) // 2
+        self.proj_size = proj_size
+
+        # Quantize embed/LM-head (tied) → INT8
+        embed_fp32 = backbone.embeddings.weight.float()
+        self.embed_weight_int8, self.embed_scale, self.embed_row_sum = \
+            self._quantize_per_row(embed_fp32)
+        self.embed_weight_int8 = self.embed_weight_int8.contiguous().cpu()
+        self.embed_scale = self.embed_scale.contiguous().cpu()
+        self.embed_row_sum = self.embed_row_sum.contiguous().cpu()
+
+        # Final norm (FP32)
+        self.norm_f_weight = backbone.norm_f.weight.float().contiguous().cpu()
+
+        # Per-layer norms (FP32)
+        self.layer_norm_weights = torch.stack(
+            [b.norm.weight.float().contiguous() for b in backbone.layers]).cpu()
+
+        # Quantize in_proj → INT8
+        in_proj_int8_list = []
+        in_proj_scale_list = []
+        in_proj_rsum_list = []
+        for b in backbone.layers:
+            w_i8, s, rs = self._quantize_per_row(b.mixer.in_proj.weight.float())
+            in_proj_int8_list.append(w_i8.contiguous())
+            in_proj_scale_list.append(s.contiguous())
+            in_proj_rsum_list.append(rs.contiguous())
+        self.layer_in_proj_int8 = torch.stack(in_proj_int8_list).cpu()
+        self.layer_in_proj_scale = torch.stack(in_proj_scale_list).cpu()
+        self.layer_in_proj_row_sum = torch.stack(in_proj_rsum_list).cpu()
+
+        # in_proj bias (FP32)
+        self.layer_in_proj_bias = torch.stack(
+            [b.mixer.in_proj.bias.float().contiguous() if b.mixer.in_proj.bias is not None
+             else torch.zeros(proj_size) for b in backbone.layers]).cpu()
+
+        # Conv weights (FP32, transposed [K, conv_dim])
+        self.layer_conv_weight = torch.stack(
+            [b.mixer.conv1d.weight.squeeze(1).float().t().contiguous()
+             for b in backbone.layers]).cpu()
+        self.layer_conv_bias = torch.stack(
+            [b.mixer.conv1d.bias.float().contiguous() if b.mixer.use_conv_bias
+             else torch.zeros(self.conv_dim) for b in backbone.layers]).cpu()
+
+        # SSM params (FP32)
+        self.layer_A_log = torch.stack(
+            [b.mixer.A_log.float().contiguous() for b in backbone.layers]).cpu()
+        self.layer_D = torch.stack(
+            [b.mixer.D.float().contiguous() for b in backbone.layers]).cpu()
+        self.layer_dt_bias = torch.stack(
+            [b.mixer.dt_bias.float().contiguous() for b in backbone.layers]).cpu()
+        self.layer_ssm_norm_weight = torch.stack(
+            [b.mixer.norm.weight.float().contiguous() for b in backbone.layers]).cpu()
+
+        # Quantize out_proj → INT8
+        out_proj_int8_list = []
+        out_proj_scale_list = []
+        out_proj_rsum_list = []
+        for b in backbone.layers:
+            w_i8, s, rs = self._quantize_per_row(b.mixer.out_proj.weight.float())
+            out_proj_int8_list.append(w_i8.contiguous())
+            out_proj_scale_list.append(s.contiguous())
+            out_proj_rsum_list.append(rs.contiguous())
+        self.layer_out_proj_int8 = torch.stack(out_proj_int8_list).cpu()
+        self.layer_out_proj_scale = torch.stack(out_proj_scale_list).cpu()
+        self.layer_out_proj_row_sum = torch.stack(out_proj_rsum_list).cpu()
+
+        # out_proj bias (FP32)
+        self.layer_out_proj_bias = torch.stack(
+            [b.mixer.out_proj.bias.float().contiguous() if b.mixer.out_proj.bias is not None
+             else torch.zeros(hidden) for b in backbone.layers]).cpu()
+
+        # Load C++ module
+        from spec_mamba.cpu_kernels import get_fused_forward
+        self._fused_mod = get_fused_forward()
+
+        # Memory summary
+        int8_mb = (self.embed_weight_int8.numel() + self.layer_in_proj_int8.numel()
+                   + self.layer_out_proj_int8.numel()) / 1024**2
+        fp32_mb = (self.embed_scale.numel() + self.embed_row_sum.numel()
+                   + self.layer_in_proj_scale.numel() + self.layer_in_proj_row_sum.numel()
+                   + self.layer_out_proj_scale.numel() + self.layer_out_proj_row_sum.numel()
+                   + self.layer_norm_weights.numel() + self.norm_f_weight.numel()
+                   + self.layer_in_proj_bias.numel() + self.layer_out_proj_bias.numel()
+                   + self.layer_conv_weight.numel() + self.layer_conv_bias.numel()
+                   + self.layer_A_log.numel() + self.layer_D.numel()
+                   + self.layer_dt_bias.numel() + self.layer_ssm_norm_weight.numel()
+                   ) * 4 / 1024**2
+        print(f"[Int8FusedCPUMamba2Model] Initialized: {n_layers} layers, "
+              f"INT8 weights={int8_mb:.1f}MB, FP32 weights={fp32_mb:.1f}MB")
+
+    def create_cache(self, batch_size: int = 1):
+        """Create cache tensors for fused forward. B=1 only."""
+        assert batch_size == 1
+        conv_states = torch.zeros(
+            self.n_layers, self.conv_kernel, self.conv_dim, dtype=torch.float32)
+        ssm_states = torch.zeros(
+            self.n_layers, self.n_heads, self.head_dim, self.state_size, dtype=torch.float32)
+        return conv_states, ssm_states
+
+    def forward_step(self, token_id: int, conv_states: torch.Tensor, ssm_states: torch.Tensor,
+                      guidance_deltas: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Single-step forward returning logits [1, vocab_size].
+
+        Args:
+            guidance_deltas: Optional FP32 [n_layers, d_inner] tensor.
+                Injected into x-branch after in_proj. Pass empty tensor or None to skip.
+        """
+        if guidance_deltas is None:
+            guidance_deltas = torch.empty(0, dtype=torch.float32)
+        return self._fused_mod.fused_mamba2_step_int8(
+            token_id,
+            self.embed_weight_int8,
+            self.embed_scale,
+            self.embed_row_sum,
+            self.norm_f_weight,
+            self.layer_norm_weights,
+            self.layer_in_proj_int8,
+            self.layer_in_proj_scale,
+            self.layer_in_proj_row_sum,
+            self.layer_in_proj_bias,
+            self.layer_conv_weight,
+            self.layer_conv_bias,
+            self.layer_A_log,
+            self.layer_D,
+            self.layer_dt_bias,
+            self.layer_ssm_norm_weight,
+            self.layer_out_proj_int8,
+            self.layer_out_proj_scale,
+            self.layer_out_proj_row_sum,
+            self.layer_out_proj_bias,
+            conv_states,
+            ssm_states,
+            self.n_layers,
+            self.hidden_size,
+            self.d_inner,
+            self.conv_dim,
+            self.n_heads,
+            self.head_dim,
+            self.state_size,
+            self.n_groups,
+            self.conv_kernel,
+            self.time_step_limit[0],
+            self.time_step_limit[1],
+            self.d_mlp,
+            self.proj_size,
+            guidance_deltas,
+        )
+
+    def forward_step_tensor(self, token_ids: torch.Tensor, conv_states: torch.Tensor, ssm_states: torch.Tensor,
+                            guidance_deltas: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Wrapper accepting [B=1, 1] tensor input for API compatibility."""
+        return self.forward_step(token_ids.item(), conv_states, ssm_states, guidance_deltas)
+
+    def prefill(self, token_ids: torch.Tensor, conv_states: torch.Tensor, ssm_states: torch.Tensor) -> torch.Tensor:
+        """Process prompt tokens one at a time (no guidance during prefill)."""
+        S = token_ids.shape[1]
+        logits = None
+        for t in range(S):
+            logits = self.forward_step(token_ids[0, t].item(), conv_states, ssm_states)
+        return logits

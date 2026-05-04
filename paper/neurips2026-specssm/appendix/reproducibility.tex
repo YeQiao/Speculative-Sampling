@@ -1,2 +1,17 @@
-% Include exact commands, seeds, and run configurations required to reproduce all main figures and tables.
-% Provide environment versions, package versions, and checkpoint identifiers.
+\paragraph{Environment.}
+All experiments use Python 3.10, PyTorch 2.1+, and HuggingFace Transformers 4.40+.
+The Mamba2 model uses the \texttt{mamba-ssm} library.
+GPU experiments run on 2$\times$ NVIDIA H100 NVL (95\,GB each); CPU experiments on Intel Xeon Platinum 8562Y+ (Sapphire Rapids, 128 cores).
+
+\paragraph{Checkpoints.}
+The Mamba2-27M drafter is pretrained on FineWeb-Edu~\citep{penedo2024finewebedu} for $\sim$100M samples (1 epoch), then KD-finetuned on 50K UltraChat samples (1500 steps), and finally guidance-trained for 10 epochs.
+The Mamba2-45M drafter is pretrained for $\sim$38M samples (0.38 epochs), then follows the same KD and guidance pipeline.
+The verifier LLaMA-3.1-8B is used as-is from Meta's release; LLaMA-3.1-70B is loaded in 8-bit quantization via \texttt{bitsandbytes}.
+
+\paragraph{Evaluation.}
+All main results use $n\!=\!96$ samples per dataset, greedy decoding ($T\!=\!0$), lookahead $K\!=\!8$, and rejection masking enabled.
+The 70B verifier results currently use $n\!=\!12$ (quick evaluation); full $n\!=\!96$ runs are forthcoming.
+
+\paragraph{Random seeds.}
+Evaluation uses deterministic greedy sampling (no randomness).
+Training uses seed 42 for data shuffling and parameter initialization.
