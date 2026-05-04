@@ -116,7 +116,7 @@ def plot_acceptance_by_dataset():
     # Data from experiments (LLaMA-8B verifier)
     data = {
         'LLaMA-1B':       [4.88, 2.60, 4.35, 2.73, 2.39],
-        '45M guided':     [2.45, 3.47, 3.42, 2.62, 2.23],
+        '45M guided':     [2.45, 3.37, 3.42, 2.62, 2.23],
         '27M guided':     [2.07, 2.91, 2.75, 2.20, 1.72],
         '27M pretrained': [1.49, 2.09, 2.64, 1.87, 1.18],
     }
@@ -199,8 +199,8 @@ def plot_guidance_improvement():
     """Bar chart showing guidance improvement ratio across verifiers."""
     verifiers = ['LLaMA-8B\n(27M)', 'LLaMA-8B\n(45M)', 'LLaMA-70B\n(27M)', 'Gemma-4B\n(45M)']
     pretrained = [1.86, 1.52, 2.51, 0.63]
-    guided = [2.33, 2.62, None, 0.94]  # 70B guided = TBD
-    improvement = [25, 72, None, 49]
+    guided = [2.33, 2.82, None, 0.94]  # 70B guided = TBD
+    improvement = [25, 85, None, 49]
 
     fig, ax = plt.subplots(figsize=(5.5, 3.5))
 

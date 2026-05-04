@@ -1,6 +1,7 @@
 We presented SpecSSM, a speculative decoding framework that pairs tiny externally pretrained Mamba2 drafters with transformer verifiers of varying scale and family.
-By injecting verifier hidden states into the SSM's state-update pathway via lightweight linear projections, guided Mamba2-45M achieves 2.62 mean accepted tokens per round with LLaMA-8B (72\% over the unguided baseline), and guided Mamba2-27M achieves 2.33 (+25\%).
+By injecting verifier hidden states into the SSM's state-update pathway via lightweight linear projections, guided Mamba2-45M achieves 2.82 mean accepted tokens per round with LLaMA-8B (85\% over the unguided baseline), and guided Mamba2-27M achieves 2.33 (+25\%).
 Guidance transfers across verifier families (LLaMA, Gemma) and scales with verifier size: pretrained acceptance increases 35\% from LLaMA-8B to LLaMA-70B.
+As a released internal baseline, chain-only EAGLE-3 reaches 1.41 mean accepted tokens with its matched LLaMA-3.1-8B-Instruct verifier, remaining below both guided SSM variants.
 
 We introduced activation replay as an efficient method to resynchronize the SSM's recurrent state after speculative rejection, replacing $O(T)$ re-prefill with $O(K)$ replay.
 On CPU, this yields up to $201{\times}$ speedup at 1024-token contexts, making it essential for the CPU-offloaded pipeline.

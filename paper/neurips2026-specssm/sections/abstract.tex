@@ -1,6 +1,6 @@
 Speculative decoding accelerates large language model (LLM) inference by drafting candidate tokens with a fast model and verifying them in parallel with the target model.
 Self-drafting methods reuse verifier components but consume GPU memory, require verifier modification, and degrade out of distribution; external transformer drafters are more robust but carry quadratic attention costs.
-We present \textbf{SpecSSM}, which combines an externally pretrained Mamba2 drafter (27M and 45M backbone parameters, $44\times$ and $22\times$ smaller than LLaMA-3.2-1B) with verifier-guided hidden-state injection and full CPU offloading.
+We present \textbf{SpecSSM}, which combines an externally pretrained Mamba2 drafter (27M and 45M backbone parameters, $44\times$ and $26\times$ smaller than LLaMA-3.2-1B) with verifier-guided hidden-state injection and full CPU offloading.
 Lightweight projections steer the recurrent drafter toward the verifier's distribution without modifying the verifier.
 \emph{Activation replay} resynchronizes the SSM state after rejection in $O(K)$ rather than $O(T)$, yielding up to $201\times$ speedup over full re-prefill.
 A custom AVX-512/INT8 CPU kernel, targeting the linear-projection bottleneck that dominates 85\% of SSM inference, completes 8-token drafts in just 9\,ms within the GPU verification window.

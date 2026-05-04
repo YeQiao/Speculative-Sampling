@@ -28,6 +28,8 @@ We present \textbf{SpecSSM}, which combines an externally pretrained Mamba2 draf
 (3)~\emph{CPU offloading with a custom kernel}: because the drafter is tiny, we offload it entirely to CPU, freeing all GPU memory and computing resourcesfor the verifier.
 We developed a custom C++ kernel stack using AVX-512 intrinsics and INT8 quantization targets the linear-projection bottleneck, achieving $7.5\times$ speedup over na\"ive PyTorch and completing 8-token drafts in 9\,ms, which fits inside the 16\,ms GPU verification window for asynchronous pipeline overlap.
 
+Compared to EAGLE-3~\citep{li2024eagle3}, the current state-of-the-art self-drafting method whose public checkpoint is matched to the same LLaMA-3.1-8B verifier family, our 45M guided drafter achieves $2\times$ higher acceptance length (2.82 vs.\ 1.41 mean accepted tokens) while consuming zero GPU memory during drafting.
+
 Our contributions are:
 \begin{enumerate}
     \item A \textbf{guided external SSM drafter} that injects verifier hidden states into Mamba2's state-update branch. With backbones of 27M and 45M parameters ($44\times$ and $26\times$ smaller than LLaMA-3.2-1B), guidance improves acceptance by 25--85\% over unguided baselines. The approach transfers across verifier families (LLaMA, Gemma) and scales with verifier size (TBD mean with LLaMA-70B, +35\% over 8B).

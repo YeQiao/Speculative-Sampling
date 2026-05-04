@@ -38,6 +38,7 @@ We compare against:
   \item \textbf{Mamba2-27M (pretrained)}: Same drafter with no guidance training (pretrained-only).
   \item \textbf{Mamba2-27M (KD, no guide)}: Knowledge-distilled drafter with guidance weights zeroed out. Tests whether the guided checkpoint's backbone has become dependent on guidance signals.
   \item \textbf{LLaMA-3.2-1B drafter}: Standard transformer-based speculative decoding baseline (1.2B parameters).
+  \item \textbf{EAGLE-3 chain}~\citep{li2024eagle3}: Public chain-only self-drafting baseline evaluated with its matched LLaMA-3.1-8B-Instruct verifier. Because the released checkpoint is instruct-tuned, we report it as a reference internal baseline rather than a strictly matched base-verifier comparison.
 \end{itemize}
 
 \paragraph{Benchmarks.}
