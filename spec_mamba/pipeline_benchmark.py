@@ -10,19 +10,20 @@ Modes:
 
 Usage:
   # CPU-only (can run while GPUs are busy):
-  python -m spec_mamba.pipeline_benchmark --mode cpu_verify --total_samples 4 --verifier /path/to/Llama3.1-8B-hf
+    python -m spec_mamba.pipeline_benchmark --mode cpu_verify --datasets humaneval,gsm8k --total_samples 4 --verifier /path/to/Llama3.1-8B-hf
 
   # GPU-CPU pipeline (unguided):
-  python -m spec_mamba.pipeline_benchmark --mode gpu_verify --total_samples 48 --verifier /path/to/Llama3.1-8B-hf
+    python -m spec_mamba.pipeline_benchmark --mode gpu_verify --datasets humaneval,gsm8k --total_samples 48 --verifier /path/to/Llama3.1-8B-hf
 
   # GPU-CPU pipeline with guidance (optimal):
-  python -m spec_mamba.pipeline_benchmark --mode gpu_verify --guided_ckpt /path/to/guided.ckpt --total_samples 48
+    python -m spec_mamba.pipeline_benchmark --mode gpu_verify --guided_ckpt /path/to/guided.ckpt --datasets humaneval,gsm8k --total_samples 48
 
   # 70B verifier (multi-GPU):
   python -m spec_mamba.pipeline_benchmark --mode gpu_verify --verifier /path/to/70B --device_map auto --total_samples 48
 
 Notes:
   - CPU drafter uses Int8FusedCPUMamba2Model (AVX-512 VNNI, B=1 only)
+    - Prompts are sampled from evaluation datasets (default: humaneval,gsm8k)
   - When --guided_ckpt is provided, guidance deltas are computed on GPU
     from verifier hidden states and transferred to CPU for drafter injection
   - Uses greedy decoding for deterministic benchmarks
@@ -38,6 +39,7 @@ from dataclasses import dataclass, field
 
 import torch
 import torch.nn.functional as F
+from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 
 torch.set_grad_enabled(False)
@@ -48,6 +50,7 @@ DEFAULT_VERIFIER_8B = "/HSC/users/qiaoye/checkpoints/Llama3.1-8B-hf"
 DEFAULT_NG = 8
 DEFAULT_TGT_LEN = 128
 DEFAULT_TOTAL_SAMPLES = 48
+DEFAULT_PROMPT_DATASETS = "humaneval,gsm8k"
 PYTHON = "/HSC/users/qiaoye/envs/ssm_spec_py310/bin/python"
 
 
@@ -120,30 +123,36 @@ def load_guidance_modules(ckpt_path: str, device: str = "cuda"):
     del ckpt  # free memory
     return ge, prep, v_layers, drafter_sd
 
-DATASETS_PROMPTS = {
-    "alpaca": [
-        "Give me a brief history of the Roman Empire.",
-        "Explain the concept of supply and demand in economics.",
-        "Write a short poem about the ocean.",
-        "What are the main differences between Python and JavaScript?",
-        "Describe the process of photosynthesis in simple terms.",
-        "List five tips for effective time management.",
-        "Explain how a neural network learns from data.",
-        "What is the significance of the Turing test?",
-    ],
-    "code": [
-        "Write a Python function that finds the longest common subsequence of two strings.",
-        "Implement a binary search tree in Python with insert and search methods.",
-        "Write a Python function to check if a string is a valid palindrome, ignoring spaces and punctuation.",
-        "Implement merge sort in Python and explain its time complexity.",
-    ],
-    "math": [
-        "Solve the equation: 3x^2 - 12x + 9 = 0. Show your work step by step.",
-        "A rectangular garden has a perimeter of 56 meters. If the length is 4 meters more than the width, find the dimensions.",
-        "Calculate the probability of rolling a sum of 7 with two fair dice.",
-        "Find the derivative of f(x) = x^3 * ln(x) using the product rule.",
-    ],
-}
+def _get_dataset_prompts(dataset: str, n: int) -> list[str]:
+    """Load prompts from evaluation datasets used in paper experiments."""
+    if dataset == "humaneval":
+        data = load_dataset("openai_humaneval", split="test")
+        return list(data["prompt"][:n])
+    if dataset == "gsm8k":
+        data = load_dataset("gsm8k", "main", split="test")
+        return list(data["question"][:n])
+    raise ValueError(f"Unsupported benchmark dataset: {dataset}")
+
+
+def collect_benchmark_prompts(dataset_names: list[str], total_samples: int) -> tuple[list[str], dict[str, int]]:
+    """Collect prompts from datasets, balancing samples across sources."""
+    if not dataset_names:
+        raise ValueError("No datasets provided")
+
+    base = total_samples // len(dataset_names)
+    rem = total_samples % len(dataset_names)
+
+    prompts = []
+    counts = {}
+    for i, ds_name in enumerate(dataset_names):
+        take = base + (1 if i < rem else 0)
+        if take <= 0:
+            counts[ds_name] = 0
+            continue
+        ds_prompts = _get_dataset_prompts(ds_name, take)
+        prompts.extend(ds_prompts)
+        counts[ds_name] = len(ds_prompts)
+    return prompts, counts
 
 
 @dataclass
@@ -171,10 +180,19 @@ class BenchmarkResult:
     total_draft_ms: float = 0.0
     total_verify_ms: float = 0.0
     total_replay_ms: float = 0.0
+    # Pipeline stats
+    spec_replay_hit_rate: float = 0.0
 
 
-def load_cpu_drafter(drafter_path: str, use_int8: bool = True):
-    """Load Mamba2 drafter as Int8 or BF16 fused CPU model."""
+def load_cpu_drafter(drafter_path: str, use_int8: bool = True, guided_sd: dict = None):
+    """Load Mamba2 drafter as Int8 or BF16 fused CPU model.
+
+    Args:
+        guided_sd: Optional dict of fine-tuned drafter weights from a guided checkpoint.
+            Keys are in GuidedMamba2 format (backbone.layers.X.mixer.m.Y); these are
+            remapped to standard HF format (backbone.layers.X.mixer.Y) before loading.
+            This overrides the base checkpoint weights with fine-tuned weights.
+    """
     print(f"Loading HF Mamba2 from {drafter_path}...")
     hf_model = AutoModelForCausalLM.from_pretrained(
         drafter_path, torch_dtype=torch.float32,
@@ -183,6 +201,23 @@ def load_cpu_drafter(drafter_path: str, use_int8: bool = True):
     # Disable fast path (causal_conv1d stride issue with 45M model)
     import transformers.models.mamba2.modeling_mamba2 as _m2
     _m2.is_fast_path_available = False
+
+    # Apply fine-tuned weights from guided checkpoint if provided.
+    # The guided checkpoint stores drafter weights with GuidedMamba2Block wrapping:
+    #   backbone.layers.X.mixer.m.Y  →  backbone.layers.X.mixer.Y
+    if guided_sd:
+        print("Applying fine-tuned drafter weights from guided checkpoint...")
+        hf_sd = {}
+        for k, v in guided_sd.items():
+            hf_key = k.replace(".mixer.m.", ".mixer.")
+            hf_sd[hf_key] = v.float()
+        missing, unexpected = hf_model.load_state_dict(hf_sd, strict=False)
+        if missing:
+            print(f"  Missing keys ({len(missing)}): {missing[:3]}")
+        if unexpected:
+            print(f"  Unexpected keys ({len(unexpected)}): {unexpected[:3]}")
+        else:
+            print(f"  Loaded {len(hf_sd)} fine-tuned weight tensors successfully.")
 
     if use_int8:
         from spec_mamba.cpu_mamba2 import Int8FusedCPUMamba2Model
@@ -678,7 +713,7 @@ def spec_dec_generate_pipelined(
 #  Guided pipeline: GPU verify + guidance extraction → CPU guided draft
 # =========================================================================
 
-def _verify_with_guidance(verifier, verify_input, v_pkv, ge, prep, v_device):
+def _verify_with_guidance(verifier, verify_input, v_pkv, ge, prep, v_device, n_accepted=None):
     """Run verifier forward with hidden state extraction + guidance computation.
 
     Args:
@@ -688,10 +723,12 @@ def _verify_with_guidance(verifier, verify_input, v_pkv, ge, prep, v_device):
         ge: GuidanceExtractor on GPU
         prep: PrepMambaDeltas on GPU
         v_device: verifier device
+        n_accepted: If provided, extract guidance at position n_accepted
+                    (the acceptance boundary). If None, use last position.
 
     Returns:
         v_logits: [1, S, V] on GPU
-        guide_deltas_cpu: [n_layers, d_inner] FP32 on CPU (squeezed from [nL, 1, 1, D])
+        guide_embd: [1, S, v_h_dim] on GPU (full sequence, for later position selection)
         v_pkv: updated KV cache
     """
     # Run verifier decoder with hidden states
@@ -714,19 +751,26 @@ def _verify_with_guidance(verifier, verify_input, v_pkv, ge, prep, v_device):
     # GuidanceExtractor: [1, S, concat_dim] → [1, S, v_h_dim]
     guide_embd = ge.proj(guide_input.to(ge.proj.weight.dtype))
 
-    # Take last position only (guidance for next round of drafting)
-    guide_last = guide_embd[:, -1, None]  # [1, 1, v_h_dim]
-
-    # PrepMambaDeltas: [1, 1, v_h_dim] → [n_layers, 1, 1, delta_dim]
-    deltas = prep(guide_last)  # [n_layers, 1, 1, delta_dim]
-
-    # Squeeze to [n_layers, delta_dim] for the C++ kernel and transfer to CPU
-    guide_deltas_cpu = deltas.squeeze(1).squeeze(1).float().cpu()
-
     # Compute logits
     v_logits = verifier.lm_head(v_out.last_hidden_state)
 
-    return v_logits, guide_deltas_cpu, v_pkv
+    return v_logits, guide_embd, v_pkv
+
+
+def _guidance_from_embd(guide_embd, prep, pos):
+    """Extract guidance deltas from guide_embd at a given position.
+
+    Args:
+        guide_embd: [1, S, v_h_dim] tensor
+        prep: PrepMambaDeltas module
+        pos: position index to extract from
+
+    Returns:
+        guide_deltas_cpu: [n_layers, delta_dim] FP32 on CPU
+    """
+    guide_pos = guide_embd[:, pos, None]  # [1, 1, v_h_dim]
+    deltas = prep(guide_pos)  # [n_layers, 1, 1, delta_dim]
+    return deltas.squeeze(1).squeeze(1).float().cpu()
 
 
 def spec_dec_generate_guided(
@@ -777,7 +821,7 @@ def spec_dec_generate_guided(
     v_last_logits = verifier.lm_head(v_out.last_hidden_state[:, -1:])
     first_token = v_last_logits.argmax(dim=-1).item()
 
-    # Extract initial guidance
+    # Extract initial guidance from last position
     tgt_device = ge.proj.weight.device
     guide_input = None
     for idx in ge.in_layer:
@@ -786,15 +830,30 @@ def spec_dec_generate_guided(
     v_out.hidden_states = None
 
     guide_embd = ge.proj(guide_input.to(ge.proj.weight.dtype))
-    guide_last = guide_embd[:, -1, None]  # [1, 1, v_h_dim]
-    deltas = prep(guide_last)  # [n_layers, 1, 1, delta_dim]
-    current_deltas_cpu = deltas.squeeze(1).squeeze(1).float().cpu()  # [n_layers, d_inner]
+    current_deltas_cpu = _guidance_from_embd(guide_embd, prep, -1)
+
+    # Keep full KV cache (no crop). The pipeline generates first_token from
+    # prefill and then drafts from first_token onward. The verifier KV retains
+    # the full prompt context so verify calls get correct position encoding.
 
     torch.cuda.synchronize()
 
-    # ---- CPU drafter prefill (no guidance during prefill) ----
+    # ---- Precompute prep(zeros) bias for CPU drafter ----
+    # The trainer passes prep(torch.zeros(...)) during prefill/replay, which is
+    # NOT zero (LayerNorm bias + trained proj). CPU drafter must use the same bias.
+    with torch.no_grad():
+        v_h_dim = ge.proj.weight.shape[0]
+        zero_deltas_cpu = prep(torch.zeros(1, 1, v_h_dim, device=prep.proj.weight.device))
+        zero_deltas_cpu = zero_deltas_cpu.squeeze(1).squeeze(1).float().cpu()  # [n_layers, delta_dim]
+
+    # ---- CPU drafter prefill (with prep(zeros) bias, matching trainer) ----
     conv_states, ssm_states = cpu_drafter.create_cache(batch_size=1)
-    cpu_drafter.prefill(input_ids.cpu(), conv_states, ssm_states)
+    input_ids_cpu = input_ids.cpu()
+    for t in range(input_ids_cpu.shape[1]):
+        cpu_drafter.forward_step(
+            input_ids_cpu[0, t].item(), conv_states, ssm_states,
+            guidance_deltas=zero_deltas_cpu,
+        )
 
     # State tracking
     generated_tokens = [first_token]
@@ -837,13 +896,13 @@ def spec_dec_generate_guided(
         t1 = time.perf_counter()
         round_timing.draft_ms = (t1 - t0) * 1000
 
-        # --- GPU Verify + extract new guidance ---
+        # --- GPU Verify + extract guidance ---
         verify_input = torch.tensor(
             [[current_token] + draft_tokens], dtype=torch.long, device=v_device,
         )
         torch.cuda.synchronize()
         t0 = time.perf_counter()
-        v_logits, new_deltas_cpu, v_pkv = _verify_with_guidance(
+        v_logits, guide_embd, v_pkv = _verify_with_guidance(
             verifier, verify_input, v_pkv, ge, prep, v_device,
         )
         torch.cuda.synchronize()
@@ -868,38 +927,23 @@ def spec_dec_generate_guided(
         accepted = draft_tokens[:n_accepted] + [next_token]
         generated_tokens.extend(accepted)
 
-        # --- Update guidance deltas for next round ---
-        # The _verify_with_guidance already computed deltas from the LAST
-        # position of the verify input. But we actually want the guidance
-        # at the acceptance boundary (position n_accepted).
-        # For simplicity (and matching trainer.py), we recompute from the
-        # correct position. The verify output has NG+1 positions of hidden
-        # states, and we want position n_accepted.
-        # However, _verify_with_guidance already freed hidden_states.
-        # The approximation of using the last hidden state is actually what
-        # happens in practice when all tokens are accepted. When some are
-        # rejected, the guidance is "stale by the rejected tokens" which is
-        # the same staleness pattern as training (shift_offset).
-        # For optimal accuracy, we'd need to re-extract. For benchmark
-        # purposes, using last-position guidance is a conservative estimate
-        # (acceptance may be slightly lower than optimal).
-        current_deltas_cpu = new_deltas_cpu
+        # --- Extract guidance at acceptance boundary (position n_accepted) ---
+        # Matches trainer.py: guide = prep(guide_embd[arange(B), NA, None])
+        # Position n_accepted in the verify output corresponds to the token
+        # at the acceptance boundary — this is where the next round should start.
+        current_deltas_cpu = _guidance_from_embd(guide_embd, prep, n_accepted)
+        del guide_embd
 
-        # --- Drafter cache: activation replay (WITHOUT guidance) ---
-        # Replay uses unguided forward to resync cache state.
-        # Guidance doesn't affect the internal SSM state propagation
-        # in a way that matters for cache — the delta is added post-in_proj
-        # and doesn't change conv_state or ssm_state update equations.
-        # Actually: guidance DOES affect the conv input (hbc) which flows
-        # into conv_state. So we should replay WITH guidance for correctness.
+        # --- Drafter cache: activation replay with prep(zeros) bias ---
+        # The trainer passes prep(torch.zeros(...)) during replay, which is NOT
+        # actual zeros (norm bias + trained proj produce non-zero deltas).
+        # CPU drafter must use the same bias to maintain state alignment.
         t0 = time.perf_counter()
         conv_states.copy_(snap_conv)
         ssm_states.copy_(snap_ssm)
         for tok_id in accepted:
-            cpu_drafter.forward_step(
-                tok_id, conv_states, ssm_states,
-                guidance_deltas=current_deltas_cpu,
-            )
+            cpu_drafter.forward_step(tok_id, conv_states, ssm_states,
+                                     guidance_deltas=zero_deltas_cpu)
         t1 = time.perf_counter()
         round_timing.replay_ms = (t1 - t0) * 1000
 
@@ -933,13 +977,249 @@ def spec_dec_generate_guided(
 
     return result
 
+def spec_dec_generate_guided_pipelined(
+    cpu_drafter,
+    verifier,
+    ge,
+    prep,
+    tokenizer,
+    prompt: str,
+    max_new_tokens: int = 128,
+    NG: int = 8,
+    greedy: bool = True,
+) -> BenchmarkResult:
+    """Pipelined speculative decoding attempt: overlap CPU replay with GPU verify.
+
+    FINDING: model.forward() in eager PyTorch is SYNCHRONOUS — by the time it
+    returns, GPU is already done (torch.cuda.synchronize() = 0.04ms after).
+    There is NO async window for CPU overlap.
+
+    This function still implements speculative replay to measure the maximum
+    achievable benefit IF async overlap existed (theoretical). In practice,
+    the speculative replay adds sequential overhead, making this SLOWER than
+    the sequential version.
+
+    Kept for comparison purposes. Use --skip-pipeline to skip.
+    """
+    result = BenchmarkResult(prompt=prompt)
+
+    # Tokenize
+    if tokenizer.chat_template:
+        messages = [{"role": "user", "content": prompt}]
+        tok_out = tokenizer.apply_chat_template(
+            messages, return_tensors="pt",
+            add_generation_prompt=True,
+            return_dict=True,
+        )
+        input_ids = tok_out["input_ids"]
+    else:
+        input_ids = tokenizer(prompt, return_tensors="pt")["input_ids"]
+
+    v_device = next(verifier.parameters()).device
+    assert v_device.type == "cuda", "Pipelined guided mode requires GPU verifier"
+
+    # ---- Verifier prefill with guidance extraction ----
+    input_ids_v = input_ids.to(v_device)
+    v_pkv = DynamicCache()
+    torch.cuda.synchronize()
+
+    v_out = verifier.model(
+        input_ids_v, past_key_values=v_pkv, use_cache=True,
+        output_hidden_states=True,
+    )
+    v_pkv = v_out.past_key_values
+    v_last_logits = verifier.lm_head(v_out.last_hidden_state[:, -1:])
+    first_token = v_last_logits.argmax(dim=-1).item()
+
+    # Extract initial guidance from last position
+    tgt_device = ge.proj.weight.device
+    guide_input = None
+    for idx in ge.in_layer:
+        h = v_out.hidden_states[idx].to(tgt_device)
+        guide_input = h if guide_input is None else torch.cat((guide_input, h), dim=-1)
+    v_out.hidden_states = None
+    guide_embd = ge.proj(guide_input.to(ge.proj.weight.dtype))
+    current_deltas_cpu = _guidance_from_embd(guide_embd, prep, -1)
+
+    torch.cuda.synchronize()
+
+    # ---- Precompute prep(zeros) bias for CPU drafter ----
+    with torch.no_grad():
+        v_h_dim = ge.proj.weight.shape[0]
+        zero_deltas_cpu = prep(torch.zeros(1, 1, v_h_dim, device=prep.proj.weight.device))
+        zero_deltas_cpu = zero_deltas_cpu.squeeze(1).squeeze(1).float().cpu()
+
+    # ---- CPU drafter prefill ----
+    conv_states, ssm_states = cpu_drafter.create_cache(batch_size=1)
+    input_ids_cpu = input_ids.cpu()
+    for t in range(input_ids_cpu.shape[1]):
+        cpu_drafter.forward_step(
+            input_ids_cpu[0, t].item(), conv_states, ssm_states,
+            guidance_deltas=zero_deltas_cpu,
+        )
+
+    # ---- Pre-allocate speculative replay buffers (avoids malloc per round) ----
+    spec_conv = conv_states.clone()
+    spec_ssm = ssm_states.clone()
+
+    # State tracking
+    generated_tokens = [first_token]
+    current_token = first_token
+    total_draft_ms = 0.0
+    total_verify_ms = 0.0
+    total_replay_ms = 0.0
+    all_na = []
+    spec_replay_hits = 0
+    spec_replay_total = 0
+
+    gen_start = time.perf_counter()
+
+    while len(generated_tokens) < max_new_tokens:
+        round_timing = RoundTiming()
+        tokens_left = max_new_tokens - len(generated_tokens)
+        K = min(NG, tokens_left)
+
+        # --- Snapshot drafter cache (pre-draft state) ---
+        snap_conv = conv_states.clone()
+        snap_ssm = ssm_states.clone()
+
+        # --- CPU Draft K tokens WITH guidance ---
+        t0 = time.perf_counter()
+        draft_tokens = []
+        draft_probs = []
+        tok_id = current_token
+        for _ in range(K):
+            logits = cpu_drafter.forward_step(
+                tok_id, conv_states, ssm_states,
+                guidance_deltas=current_deltas_cpu,
+            )
+            probs = logits.softmax(dim=-1).squeeze(0)
+            if greedy:
+                next_t = logits.argmax(dim=-1).item()
+            else:
+                next_t = torch.multinomial(probs, 1).item()
+            draft_tokens.append(next_t)
+            draft_probs.append(probs)
+            tok_id = next_t
+        t1 = time.perf_counter()
+        round_timing.draft_ms = (t1 - t0) * 1000
+
+        # --- GPU Verify (SYNCHRONOUS: model.forward blocks for full duration) ---
+        verify_input = torch.tensor(
+            [[current_token] + draft_tokens], dtype=torch.long, device=v_device,
+        )
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+
+        # model.forward() is synchronous in eager PyTorch (~17ms wall clock)
+        # By the time it returns, GPU is already done. No async window exists.
+        v_out = verifier.model(
+            verify_input, past_key_values=v_pkv, use_cache=True,
+            output_hidden_states=True,
+        )
+        v_pkv = v_out.past_key_values
+        guide_input = None
+        for idx in ge.in_layer:
+            h = v_out.hidden_states[idx].to(tgt_device)
+            guide_input = h if guide_input is None else torch.cat((guide_input, h), dim=-1)
+        v_out.hidden_states = None
+        guide_embd = ge.proj(guide_input.to(ge.proj.weight.dtype))
+        v_logits = verifier.lm_head(v_out.last_hidden_state)
+
+        # Speculative replay: runs AFTER model.forward returns (no overlap).
+        # This is pure sequential overhead.
+        spec_conv.copy_(snap_conv)
+        spec_ssm.copy_(snap_ssm)
+        for tok_id_spec in draft_tokens:
+            cpu_drafter.forward_step(tok_id_spec, spec_conv, spec_ssm,
+                                     guidance_deltas=zero_deltas_cpu)
+
+        torch.cuda.synchronize()
+        t1 = time.perf_counter()
+        round_timing.verify_ms = (t1 - t0) * 1000
+
+        # --- Rejection (CPU, fast ~0.5ms) ---
+        draft_tokens_t = torch.tensor(draft_tokens)
+        if greedy:
+            n_accepted, next_token = greedy_rejection(
+                draft_tokens_t, draft_probs, v_logits.cpu(), K,
+            )
+        else:
+            n_accepted, next_token = stochastic_rejection(
+                draft_tokens_t, draft_probs, v_logits.cpu(), K,
+            )
+
+        round_timing.n_accepted = n_accepted
+        round_timing.tokens_produced = n_accepted + 1
+        accepted = draft_tokens[:n_accepted] + [next_token]
+        generated_tokens.extend(accepted)
+
+        # --- Extract guidance at acceptance boundary ---
+        current_deltas_cpu = _guidance_from_embd(guide_embd, prep, n_accepted)
+        del guide_embd
+
+        # --- Resolve speculative replay ---
+        t0 = time.perf_counter()
+        spec_replay_total += 1
+        if n_accepted == K:
+            # HIT: all K accepted. Speculative state is correct.
+            conv_states.copy_(spec_conv)
+            ssm_states.copy_(spec_ssm)
+            cpu_drafter.forward_step(next_token, conv_states, ssm_states,
+                                     guidance_deltas=zero_deltas_cpu)
+            spec_replay_hits += 1
+        else:
+            # MISS: restore from snapshot, replay correct tokens.
+            conv_states.copy_(snap_conv)
+            ssm_states.copy_(snap_ssm)
+            for tok_id_r in accepted:
+                cpu_drafter.forward_step(tok_id_r, conv_states, ssm_states,
+                                         guidance_deltas=zero_deltas_cpu)
+        t1 = time.perf_counter()
+        round_timing.replay_ms = (t1 - t0) * 1000
+
+        # --- Verifier KV cache: crop to keep only accepted ---
+        n_to_remove = K - n_accepted
+        if n_to_remove > 0:
+            new_len = v_pkv.get_seq_length() - n_to_remove
+            v_pkv.crop(new_len)
+
+        current_token = next_token
+        all_na.append(n_accepted)
+
+        total_draft_ms += round_timing.draft_ms
+        total_verify_ms += round_timing.verify_ms
+        total_replay_ms += round_timing.replay_ms
+        round_timing.total_ms = round_timing.draft_ms + round_timing.verify_ms + round_timing.replay_ms
+        result.rounds.append(round_timing)
+
+        if next_token == tokenizer.eos_token_id:
+            break
+
+    gen_end = time.perf_counter()
+
+    result.total_tokens = len(generated_tokens)
+    result.total_time_ms = (gen_end - gen_start) * 1000
+    result.throughput_tps = result.total_tokens / (result.total_time_ms / 1000) if result.total_time_ms > 0 else 0
+    result.avg_accepted = sum(all_na) / len(all_na) if all_na else 0
+    result.total_draft_ms = total_draft_ms
+    result.total_verify_ms = total_verify_ms
+    result.total_replay_ms = total_replay_ms
+    result.spec_replay_hit_rate = spec_replay_hits / max(spec_replay_total, 1)
+
+    return result
+
+
 def run_benchmark(args):
+    dataset_names = [d.strip() for d in args.datasets.split(",") if d.strip()]
+
     print("=" * 70)
     print(f"Pipeline Benchmark: mode={args.mode}")
     print(f"  Drafter:  {args.drafter}")
     print(f"  Verifier: {args.verifier}")
     if args.guided_ckpt:
         print(f"  Guided:   {args.guided_ckpt}")
+    print(f"  Datasets: {','.join(dataset_names)}")
     print(f"  NG={args.ng}, max_new_tokens={args.tgt_len}")
     print(f"  Total samples: {args.total_samples}")
     print(f"  Greedy: {not args.stochastic}")
@@ -956,8 +1236,13 @@ def run_benchmark(args):
         v_device_for_guide = "cpu" if args.mode == "cpu_verify" else "cuda"
         ge, prep, v_layers, drafter_sd = load_guidance_modules(args.guided_ckpt, device=v_device_for_guide)
 
-    # Load drafter
-    cpu_drafter = load_cpu_drafter(args.drafter, use_int8=not args.bf16)
+    # Load drafter — use fine-tuned weights from guided checkpoint when available
+    cpu_drafter = load_cpu_drafter(
+        args.drafter, use_int8=not args.bf16,
+        guided_sd=drafter_sd if args.guided_ckpt else None,
+    )
+    if args.guided_ckpt:
+        del drafter_sd  # free ~260MB of raw checkpoint tensors
 
     # Load verifier
     v_device = "cpu" if args.mode == "cpu_verify" else "cuda"
@@ -967,17 +1252,34 @@ def run_benchmark(args):
         quantize=args.quantize,
     )
 
-    # Tokenizer
+    # Tokenizer (must set same chat template as trainer for correct prompt formatting)
     tokenizer = AutoTokenizer.from_pretrained(args.verifier)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    if not tokenizer.chat_template:
+        # Llama 3.1 base model has no chat template; use the one from training
+        tokenizer.chat_template = (
+            "{% for message in messages %}\n"
+            "  {% if (message['role'] != 'assistant') %}\n"
+            " {{'<|start_header_id|>' + message['role'] + '<|end_header_id|>\n'"
+            " + message['content'] + '<|eot_id|>' + '\n'}}\n"
+            " {% elif (message['role'] == 'assistant')%}\n"
+            " {{'<|start_header_id|>' + message['role'] + '<|end_header_id|>\n'}}\n"
+            " {% generation %}\n"
+            " {{message['content'] + '<|eot_id|>'}}\n"
+            " {% endgeneration %}\n"
+            " {{'\n'}}\n"
+            " {% endif %}\n"
+            " {% endfor %}\n"
+            "{%- if add_generation_prompt %}\n"
+            "    {{- '<|start_header_id|>assistant<|end_header_id|>\\n' }}\n"
+            "{%- endif %}"
+        )
 
-    # Collect prompts
-    prompts = []
-    for category, ps in DATASETS_PROMPTS.items():
-        prompts.extend(ps)
-    prompts = prompts[:args.total_samples]
-    print(f"\nUsing {len(prompts)} prompts for benchmark\n")
+    # Collect prompts from requested evaluation datasets
+    prompts, prompt_counts = collect_benchmark_prompts(dataset_names, args.total_samples)
+    print(f"\nUsing {len(prompts)} prompts for benchmark")
+    print(f"Prompt split: {prompt_counts}\n")
 
     # ---- Warmup ----
     print("Warmup (2 short generations)...")
@@ -1045,6 +1347,11 @@ def run_benchmark(args):
           f"overhead={100-100*(avg_draft_frac+avg_verify_frac+avg_replay_frac):.1f}%")
 
     # Compute pipelined throughput estimate (overlap draft+replay with verify)
+    # NOTE: This estimate is UNREALIZABLE in practice. model.forward() in eager
+    # PyTorch is synchronous (blocks Python for ~17ms). By the time it returns,
+    # GPU is already done. No async window exists for CPU overlap.
+    # The formula max(verify, draft+replay) would require CUDA graphs, torch.compile,
+    # or a custom kernel to be achievable.
     total_draft_ms = sum(r.total_draft_ms for r in spec_results)
     total_verify_ms = sum(r.total_verify_ms for r in spec_results)
     total_replay_ms = sum(r.total_replay_ms for r in spec_results)
@@ -1054,10 +1361,44 @@ def run_benchmark(args):
             pipelined_est_ms += max(rd.verify_ms, rd.draft_ms + rd.replay_ms)
     pipelined_tps = total_tok / (pipelined_est_ms / 1000) if pipelined_est_ms > 0 else 0
 
-    print(f"\n  Pipeline overlap estimate:")
-    print(f"    Sequential:  {total_time:.0f} ms -> {avg_tps:.2f} tok/s")
-    print(f"    Pipelined:   {pipelined_est_ms:.0f} ms -> {pipelined_tps:.2f} tok/s")
-    print(f"    Pipeline boost: {pipelined_tps/avg_tps:.2f}x")
+    print(f"\n  Pipeline overlap estimate (THEORETICAL — unrealizable in eager PyTorch):")
+    print(f"    Sequential (actual):  {total_time:.0f} ms -> {avg_tps:.2f} tok/s")
+    print(f"    Pipelined (theory):   {pipelined_est_ms:.0f} ms -> {pipelined_tps:.2f} tok/s")
+    print(f"    Theoretical boost:    {pipelined_tps/avg_tps:.2f}x (requires CUDA graphs/compile)")
+
+    # ---- Pipelined (speculative replay) benchmark ----
+    pipe_results = []
+    if use_guided and not getattr(args, 'skip_pipeline', False):
+        print(f"\n{'='*70}")
+        print(f"PIPELINED SPEC DEC (speculative replay — expected SLOWER, for validation)")
+        print(f"  NOTE: model.forward() is synchronous; spec replay adds overhead.")
+        print("=" * 70)
+        for i, prompt in enumerate(prompts):
+            result = spec_dec_generate_guided_pipelined(
+                cpu_drafter, verifier, ge, prep, tokenizer, prompt,
+                max_new_tokens=args.tgt_len, NG=args.ng,
+                greedy=not args.stochastic,
+            )
+            pipe_results.append(result)
+            print(f"  [{i+1}/{len(prompts)}] tokens={result.total_tokens:3d}, "
+                  f"time={result.total_time_ms:.0f}ms, "
+                  f"tps={result.throughput_tps:.1f}, "
+                  f"accepted={result.avg_accepted:.2f}, "
+                  f"replay_hit={result.spec_replay_hit_rate:.0%}")
+
+        # Aggregate pipelined
+        pipe_tok = sum(r.total_tokens for r in pipe_results)
+        pipe_time = sum(r.total_time_ms for r in pipe_results)
+        pipe_tps = pipe_tok / (pipe_time / 1000) if pipe_time > 0 else 0
+        pipe_accept = sum(r.avg_accepted for r in pipe_results) / len(pipe_results)
+        pipe_hit_rate = sum(r.spec_replay_hit_rate for r in pipe_results) / len(pipe_results)
+
+        print(f"\n  Pipelined Summary:")
+        print(f"    Total tokens:    {pipe_tok}")
+        print(f"    Throughput:      {pipe_tps:.2f} tok/s")
+        print(f"    Avg accepted:    {pipe_accept:.2f} / {args.ng}")
+        print(f"    Spec replay hit: {pipe_hit_rate:.1%} (all-K-accepted rounds)")
+        print(f"    vs Sequential:   {pipe_tps/avg_tps:.2f}x")
 
     # ---- AR Baseline ----
     print(f"\n{'='*70}")
@@ -1082,16 +1423,19 @@ def run_benchmark(args):
 
     # ---- Speedup ----
     speedup_seq = avg_tps / ar_tps if ar_tps > 0 else 0
-    speedup_pipe = pipelined_tps / ar_tps if ar_tps > 0 else 0
+    speedup_pipe_est = pipelined_tps / ar_tps if ar_tps > 0 else 0
+    speedup_pipe_real = (pipe_tps / ar_tps) if (pipe_results and ar_tps > 0) else 0
 
     print(f"\n{'='*70}")
     print("SPEEDUP SUMMARY")
     print("=" * 70)
-    print(f"  AR baseline:        {ar_tps:.2f} tok/s")
-    print(f"  Spec dec (seq):     {avg_tps:.2f} tok/s  ({speedup_seq:.2f}x)")
-    print(f"  Spec dec (pipe est):{pipelined_tps:.2f} tok/s  ({speedup_pipe:.2f}x)")
-    print(f"  Avg acceptance:     {avg_accept:.2f} / {args.ng}")
-    print(f"  Guidance:           {mode_label}")
+    print(f"  AR baseline:            {ar_tps:.2f} tok/s")
+    print(f"  Spec dec (sequential):  {avg_tps:.2f} tok/s  ({speedup_seq:.2f}x)")
+    if pipe_results:
+        print(f"  Spec dec (pipelined):   {pipe_tps:.2f} tok/s  ({speedup_pipe_real:.2f}x)  [SLOWER — confirms no async overlap]")
+    print(f"  Theoretical max:        {pipelined_tps:.2f} tok/s  ({speedup_pipe_est:.2f}x)  [UNREALIZABLE — eager PyTorch sync]")
+    print(f"  Avg acceptance:         {avg_accept:.2f} / {args.ng}")
+    print(f"  Guidance:               {mode_label}")
 
     # Per-round breakdown
     all_rounds = [rd for r in spec_results for rd in r.rounds]
@@ -1114,6 +1458,8 @@ def run_benchmark(args):
             "verifier": args.verifier,
             "guided_ckpt": args.guided_ckpt,
             "guided": use_guided,
+            "datasets": dataset_names,
+            "prompt_counts": prompt_counts,
             "ng": args.ng,
             "tgt_len": args.tgt_len,
             "threads": args.threads,
@@ -1133,6 +1479,12 @@ def run_benchmark(args):
             "throughput_tps": round(pipelined_tps, 2),
             "total_time_ms": round(pipelined_est_ms, 1),
         },
+        "pipelined_measured": {
+            "throughput_tps": round(pipe_tps, 2) if pipe_results else None,
+            "total_time_ms": round(pipe_time, 1) if pipe_results else None,
+            "avg_accepted": round(pipe_accept, 2) if pipe_results else None,
+            "spec_replay_hit_rate": round(pipe_hit_rate, 3) if pipe_results else None,
+        },
         "ar_baseline": {
             "throughput_tps": round(ar_tps, 2),
             "total_tokens": ar_total_tok,
@@ -1140,7 +1492,8 @@ def run_benchmark(args):
         },
         "speedup": {
             "sequential": round(speedup_seq, 3),
-            "pipelined_estimate": round(speedup_pipe, 3),
+            "pipelined_estimate": round(speedup_pipe_est, 3),
+            "pipelined_measured": round(speedup_pipe_real, 3) if pipe_results else None,
         },
         "per_round": {
             "avg_draft_ms": round(avg_d, 2) if all_rounds else 0,
@@ -1187,6 +1540,8 @@ def main():
     parser.add_argument("--guided_ckpt", type=str, default=None,
                         help="Path to guided .ckpt with GuidanceExtractor + PrepMambaDeltas weights. "
                              "When provided, guidance deltas are computed on GPU and injected into CPU drafter.")
+    parser.add_argument("--datasets", type=str, default=DEFAULT_PROMPT_DATASETS,
+                        help="Comma-separated prompt datasets for benchmark (supported: humaneval,gsm8k)")
     parser.add_argument("--ng", type=int, default=DEFAULT_NG,
                         help="Number of draft tokens per round")
     parser.add_argument("--tgt_len", type=int, default=DEFAULT_TGT_LEN,
@@ -1205,6 +1560,8 @@ def main():
                         help="Use stochastic rejection sampling instead of greedy")
     parser.add_argument("--bf16", action="store_true",
                         help="Use BF16 fused model instead of INT8")
+    parser.add_argument("--skip_pipeline", action="store_true",
+                        help="Skip the pipelined benchmark (it's slower, just for validation)")
     parser.add_argument("--out_file", type=str, default=None,
                         help="Output file path (default: auto-generated in outputs/pipeline_benchmark/)")
     args = parser.parse_args()

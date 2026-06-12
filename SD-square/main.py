@@ -35,7 +35,9 @@ from src.data import DataLoader
 from transformers import AutoTokenizer, DynamicCache  # type: ignore
 from src.eagle import EConfig
 
-PRETTY_PRINT = True
+PRETTY_PRINT = False
+
+LLAMA31_INSTRUCT_CHAT_TEMPLATE = "{% for message in messages %}\n  {% if (message['role'] != 'assistant') %}\n {{'<|start_header_id|>' + message['role'] + '<|end_header_id|>\n' + message['content'] + '<|eot_id|>' + '\n'}}\n {% elif (message['role'] == 'assistant')%}\n {{'<|start_header_id|>' + message['role'] + '<|end_header_id|>\n'}}\n {% generation %}\n {{message['content'] + '<|eot_id|>'}}\n {% endgeneration %}\n {{'\n'}}\n {% endif %}\n {% endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|start_header_id|>assistant<|end_header_id|>\\n' }}\n{%- endif %}"
 
 
 class TrainingModule(L.LightningModule):
@@ -145,8 +147,14 @@ class TrainingModule(L.LightningModule):
                     pad_token_key = "pad_token_id"
                 else:
                     self.tok = AutoTokenizer.from_pretrained(
-                        "meta-llama/llama-3.1-8b-instruct", use_fast=True
+                        self.hparams["verifier"], use_fast=True
                     )
+                    verifier_l = self.hparams["verifier"].lower()
+                    if (
+                        "llama-3.1-8b-instruct" in verifier_l
+                        or "llama3.1-8b-instruct" in verifier_l
+                    ) and not getattr(self.tok, "chat_template", None):
+                        self.tok.chat_template = LLAMA31_INSTRUCT_CHAT_TEMPLATE
                     self.tok.truncation_side = "left"
                     self.tok.padding_side = "left"
                     self.tok.pad_token = self.tok.eos_token
@@ -796,7 +804,9 @@ class TrainingModule(L.LightningModule):
 
                 d_logits = self.eagle.lm_head(self.eagle.norm(d_hidden))
                 d_prob = d_logits.softmax(-1)
-                q[:, i].scatter_(-1, self.eagle.d2t[None, :].expand(B, -1), d_prob)
+                q[:, i].scatter_(
+                    -1, self.eagle.d2t[None, :].expand(B, -1), d_prob.to(q.dtype)
+                )
                 if self.greedy_sample:
                     next_tok = d_prob.argmax(dim=-1)
                 else:
@@ -912,31 +922,39 @@ class TrainingModule(L.LightningModule):
         )
 
     def prep_for_gen(self, prompts):
-        toks = self.tok.apply_chat_template(
-            [
+        if getattr(self.tok, "chat_template", None):
+            toks = self.tok.apply_chat_template(
                 [
-                    {
-                        "role": "system",
-                        "content": "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.",
-                    },
-                    {"role": "user", "content": msg},
-                ]
-                if self.method == "eagle"
-                else [{"role": "user", "content": msg}]
-                for msg in prompts
-            ],
-            padding_side="left",
-            enable_thinking=False,
-            return_tensors="pt",
-            add_generation_prompt=True,
-            padding=True,
-            # truncation=True,
-            # max_length=256,
-            return_dict=True,
-            tokenizer_kwargs={
-                "return_attention_mask": True,
-            },
-        )
+                    [
+                        {
+                            "role": "system",
+                            "content": "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.",
+                        },
+                        {"role": "user", "content": msg},
+                    ]
+                    if self.method == "eagle"
+                    else [{"role": "user", "content": msg}]
+                    for msg in prompts
+                ],
+                padding_side="left",
+                enable_thinking=False,
+                return_tensors="pt",
+                add_generation_prompt=True,
+                padding=True,
+                return_dict=True,
+                tokenizer_kwargs={
+                    "return_attention_mask": True,
+                },
+            )
+        else:
+            # Fallback for base checkpoints without chat templates.
+            toks = self.tok(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                return_attention_mask=True,
+            )
         input_ids = toks["input_ids"].to(self.device)
         attention_mask = toks["attention_mask"].to(self.device)
         # We get the first True of the loss mask as the end of prompt

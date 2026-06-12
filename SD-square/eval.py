@@ -1,6 +1,7 @@
 import gc
 import json
 import random
+import numpy as np
 from datasets import load_dataset
 
 from huggingface_hub import hf_hub_download
@@ -25,6 +26,20 @@ configs = {
     # "qwen3-8b/no_guide": "./ckpts/qwen8b-noguide.ckpt",
     # String to download from hf
     # "qwen3-8b/no_guide": "peerrh/qwen3-8b-steered",
+    # EAGLE-3 baseline in SD-square uses the same speculative chain loop as other methods
+    # (no tree branching implementation in this repo's generate path).
+    "llama3.1-8b/eagle3-chain": {
+        "verifier": "/HSC/users/qiaoye/checkpoints/Llama3.1-8B-hf",
+        "method": "eagle",
+        "eagle_hf_path": "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B",
+        "ngram": 8,
+    },
+    "llama3.1-8b/eagle3-chain-instruct": {
+        "verifier": "/HSC/users/qiaoye/checkpoints/Llama3.1-8B-Instruct-hf",
+        "method": "eagle",
+        "eagle_hf_path": "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B",
+        "ngram": 8,
+    },
 }
 
 
@@ -152,6 +167,18 @@ def load_from_ckpt(f: str):
 
 final_out = {}
 
+
+class _NpEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, (np.integer,)):
+            return int(o)
+        if isinstance(o, (np.floating,)):
+            return float(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        return super().default(o)
+
+
 torch.set_grad_enabled(False)
 
 for name, c in configs.items():
@@ -168,7 +195,7 @@ for name, c in configs.items():
         mod.d_base.to(torch.bfloat16)
 
     # mod.configure_model()
-    for g in [True, False]:
+    for g in [True]:
         mod.greedy_sample = g
         print(f"Greedy Sampling: {g}")
         for dataset in DATASETS:
@@ -242,8 +269,8 @@ for name, c in configs.items():
                     "bucket_info": total_bucket,
                 }
     with open(args.out_file, "w") as f:
-        json.dump(final_out, f)
+        json.dump(final_out, f, cls=_NpEncoder)
 
 
 print("Final Outputs:")
-print(json.dumps(final_out, indent=2))
+print(json.dumps(final_out, indent=2, cls=_NpEncoder))

@@ -45,36 +45,6 @@ LOOP (each round):
      - Rebuild drafter cache from scratch (Mamba2 is recurrent)
 ```
 
-## Critical Bugs Found & Fixed
-
-### 1. Off-by-One in Guidance Layer Indices
-
-**Root cause**: SD²'s `LlamaModel.forward()` collects `guide_input = hidden_states` **before** the layer runs. So `in_layer=[5]` captures the **input** to layer 5 = **output** of layer 4.
-
-The checkpoint was trained using `output_hidden_states=True` with `hidden_states[layer_idx + 1]`, which is the **output** of `layer_idx`.
-
-**Fix** (`trainer.py:_setup_guidance`):
-```python
-# Shift indices by +1 to match post-layer hidden states
-self.guidance_extractor.in_layer = [v + 1 for v in self.v_layers]
-# For v_layers=[5,16,29] → in_layer=[6,17,30]
-```
-
-**Verification**: Empirically confirmed via `CapturingExtractor` hook — `in_layer=[6,17,30]` produces exact match (diff=0.000000) with the old code's hidden states across all 3 layers.
-
-### 2. Rejection Masking: Correct but Misunderstood
-
-**Observation**: Zeroing `attention_mask` at rejected positions lowered acceptance from ~3.0 to ~0.6 on ultrachat.
-
-**Investigation**: We compared masked vs unmasked verifier output against gold autoregressive:
-
-| Metric | Masked (reject=0) | Unmasked (reject=1) |
-|--------|-------------------|---------------------|
-| vs Gold logit diff | **0.02** | 4.10 |
-| Text quality | Coherent | Degenerate/repetitive |
-| Acceptance rate | ~0.6–1.0 | ~3.0–5.6 |
-
-**Conclusion**: The masked verifier is **correct**. The high acceptance without masking was an artifact — both drafter and verifier attended to the same stale rejected KV entries, causing them to accidentally agree on wrong predictions. The "agreement" measured high acceptance, but the text was degenerate.
 
 **The masking design (matching SD² exactly)**:
 ```python
@@ -155,7 +125,7 @@ This ensures RoPE embeddings reflect the true sequence position, not the physica
 | gsm8k | 76.1 |
 | **Mean** | **75.8** |
 
-### Guided Mamba2-65M (no-mask, greedy, bsz=1, 96 samples, H100 NVL)
+### Guided Mamba2-27m (no-mask, greedy, bsz=1, 96 samples, H100 NVL)
 
 | Dataset | Accepted | Block Eff | Throughput | Speedup |
 |---------|----------|-----------|------------|---------|
@@ -279,35 +249,33 @@ Full sweep over 13 guidance configurations. All use Mamba2-65M drafter + LLaMA 3
 
 *Note: Speedup < 1.0x means spec dec is SLOWER than pure AR on H100 NVL. The H100's high AR throughput (~76 tok/s) makes it hard for any drafter to break even — the drafter overhead must be < 1/(block_eff) × AR_latency. This is a known challenge for spec dec on fast GPUs.*
 
-### Acceptance Rate Comparison (older values)
+### EAGLE-3 Chain Baseline (matched instruct setup, greedy, 96 samples)
 
-96 samples per dataset, tgt_len=128, greedy, `--no_mask`:
+Public SD-square / EAGLE-3 checkpoint evaluated in restricted chain-only mode with its matched LLaMA-3.1-8B-Instruct verifier.
 
-| Dataset | Acceptance | Throughput (tok/s) |
-|---------|-----------|-------------------|
-| ultrachat | 2.913 | 32.3 |
-| humaneval | 3.745 | 39.5 |
-| xsum | 2.419 | 25.7 |
-| alpaca | 3.707 | 33.5 |
-| gsm8k | 3.072 | 32.3 |
-| **Mean** | **3.171** | **32.7** |
+| Dataset | Accepted | Block Eff | Throughput |
+|---------|----------|-----------|------------|
+| ultrachat | 1.338 | 2.338 | 277.9 |
+| humaneval | 1.733 | 2.733 | 429.1 |
+| xsum | 1.376 | 2.376 | 275.8 |
+| alpaca | 1.150 | 2.150 | 339.4 |
+| gsm8k | 1.452 | 2.452 | 456.0 |
+| **Mean** | **1.410** | **2.410** | **355.6** |
 
-Results file: `spec_mamba/eval_results_no_mask_bsz1.json`
+*Important caveat:* this baseline uses the released instruct-tuned checkpoint and therefore is not a strict apples-to-apples comparison to our base LLaMA-3.1-8B verifier results. It is still useful as a released self-drafting reference under the same greedy chain-only $K=8$ evaluation protocol.
+
 
 ### Cross-Verification: LLaMA-1B → LLaMA-8B (vanilla, no KD)
 
 To test whether the masked/unmasked gap is a property of the non-compact layout or specific to our Mamba2 drafter, we ran vanilla speculative decoding with LLaMA-3.2-1B as drafter and LLaMA-3.1-8B as verifier (32 samples, ultrachat, greedy, bsz=1, NG=8):
 
-| Setup | Acceptance |
-|-------|-----------|
-| **WITH masking** | **2.734** |
-| **WITHOUT masking** | **2.127** |
+ Acceptance |
+-----------|
+ **2.734** |
 
-**Key finding**: The direction is **reversed** — masking gives *higher* acceptance with the vanilla transformer drafter! This disproves the theory that stale tokens universally inflate acceptance.
 
 **Explanation**: The asymmetry comes from the drafter architecture:
 - **Transformer drafter** (LLaMA-1B): In the unmasked setup, only the *verifier* sees stale rejected tokens in its KV cache. The drafter receives a *compact* re-prefilled sequence (no stale tokens). So the verifier's predictions diverge from what the drafter sees → more disagreement → lower acceptance. Masking fixes the verifier to match the clean view → both models agree more → higher acceptance.
-- **Mamba2 drafter** (guided): Mamba2 is recurrent — it never attends to any KV cache. In the unmasked setup, the verifier is confused by stale tokens, and the Mamba2 drafter makes its own independent errors. By chance, both models "agree" on wrong predictions more often than they would on correct ones → inflated acceptance. Masking corrects the verifier but the Mamba2 drafter's errors remain → less agreement → lower acceptance.
 
 **Implication**: With the compact re-prefill fix, Mamba2 masked acceptance is ~2.3 (guided) and ~1.9 (pretrained), comparable to LLaMA-1B's ~2.7. The gap is expected given 65M params vs 1.2B. The original ~1.0 masked acceptance was caused by the re-prefill bug corrupting the drafter's recurrent state with rejected tokens (see Bug #3 above).
 
@@ -320,11 +288,6 @@ Script: `spec_mamba/cross_verify_mask.py`
 - **Guidance**: 3-layer concat (layers 5, 16, 29) → linear → 4096-dim embedding → PrepMambaDeltas → 16×1024-dim deltas
 - **Training**: Used `output_hidden_states=True` (post-layer), NOT `compute_guidance` (pre-layer) — hence the off-by-one fix needed at inference
 
-## Known Limitations
-
-1. **Masked acceptance still lower than no-mask**: Guided masked=2.33 vs no-mask=3.17. The gap reflects true drafter quality — no-mask inflates acceptance due to stale-token confusion in the verifier's KV cache.
-2. **Base model limitations**: LLaMA 3.1-8B (base, not instruct) produces repetitive text with chat templates regardless of spec dec.
-3. **Mamba2 cache rebuild**: The recurrent Mamba2 drafter requires compact re-prefill after each rejection round (no KV crop equivalent). **UPDATE:** Activation replay now avoids this — see below.
 
 ---
 

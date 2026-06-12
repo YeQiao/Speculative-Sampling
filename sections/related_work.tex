@@ -1,23 +1,10 @@
-\paragraph{Speculative decoding.}
-Speculative decoding was introduced independently by \citet{leviathan2023fast} and \citet{chen2023accelerating}, who showed that a small transformer drafter can accelerate a larger verifier without changing the output distribution.
-Subsequent work has explored tree-based verification~\citep{miao2024specinfer}, self-speculation from intermediate exits~\citep{zhang2024draft}, and Medusa-style parallel heads~\citep{cai2024medusa}.
-EAGLE~\citep{li2024eagle} uses second-to-top-layer features from the target model to predict next-token features, achieving strong speedups through feature-level autoregression.
-\citet{berdoz2026steering} inject verifier hidden states into pretrained transformer drafters via steering vectors, improving acceptance rates by up to 35\%.
-Knowledge distillation has also been applied to align drafters with verifiers~\citep{zhou2023distillspec}.
+\citet{leviathan2023fast} and \citet{chen2023accelerating} independently showed that a lightweight drafter can propose multiple tokens verified in a single target-model forward pass, preserving the output distribution while reducing latency.
+The design space has since expanded along two axes: \emph{where} the drafter lives and \emph{how} it is aligned with the verifier.
+Self-drafting methods reuse verifier components---Medusa~\citep{cai2024medusa} attaches parallel heads, Draft~\&~Verify~\citep{zhang2024draft} exploits early exits, EAGLE~\citep{li2024eagle} and EAGLE-3~\citep{li2024eagle3} autoregressively predict verifier features, and SpecInfer~\citep{miao2024specinfer} explores tree-structured candidates---but all share GPU memory with the verifier and require architectural coupling.
+External drafters avoid this coupling: DistillSpec~\citep{zhou2023distillspec} aligns a separate transformer drafter via knowledge distillation, and \citet{berdoz2026steering} inject verifier hidden states as steering vectors at inference time (+35\% acceptance).
+Our guided injection extends this inference-time alignment to SSM architectures, where the recurrent state-update pathway demands a fundamentally different integration strategy than transformer attention residuals.
 
-\paragraph{Draft model architectures.}
-Most speculative decoding systems use distilled or independently trained transformer drafters, typically 100M to 1B parameters~\citep{leviathan2023fast, zhou2023distillspec}.
-Recent work has explored non-transformer drafters: \citet{choi2025mamba} demonstrated that Mamba-based SSM models achieve competitive acceptance rates as drafters despite lacking attention, and further proposed tree-structured search for draft quality.
+On the SSM side, Mamba~\citep{gu2023mamba} introduced input-dependent selective state spaces achieving transformer-competitive perplexity at linear complexity, and Mamba2~\citep{dao2024transformers} reformulated this as structured state space duality (SSD) with multi-head structure.
+\citet{choi2025mamba} first explored Mamba as a speculative drafter, demonstrating competitive acceptance rates and proposing tree search for draft quality, but left unaddressed the challenges of verifier alignment, post-rejection state resynchronization, and efficient deployment.
 
-\paragraph{State space models for language.}
-Mamba~\citep{gu2023mamba} introduced input-dependent selective state spaces for language modeling, achieving transformer-competitive perplexity at linear complexity.
-Mamba2~\citep{dao2024transformers} reformulated the selective scan as a structured state space duality (SSD) with multi-head structure, enabling efficient hardware-aware implementations.
-Hybrid architectures combining SSM layers with attention~\citep{lieber2024jamba} have also shown promise.
-
-\paragraph{Positioning.}
-Our work occupies a distinct point in the design space: we combine the robustness of an \emph{external pretrained drafter} with the efficiency of an SSM architecture and the quality boost of verifier-guided injection.
-Self-drafting methods~\citep{cai2024medusa,zhang2024draft,li2024eagle} avoid a separate model but consume GPU memory alongside the verifier, require verifier modification, and offer diminishing returns when verification dominates latency.
-Guided transformer drafters~\citep{berdoz2026steering} keep the drafter external but inherit quadratic attention costs.
-Unguided SSM drafters~\citep{choi2025mamba} are lightweight but lack verifier alignment.
-SpecSSM unifies all three advantages: verifier-guided hidden-state injection into a 27M-parameter Mamba2 drafter that is small enough to offload entirely to CPU with a custom INT8 kernel stack, freeing all GPU memory for the verifier.
-We additionally contribute activation replay for SSM cache resynchronization and provide the first systematic analysis of rejection masking effects on recurrent drafters.
+SpecSSM addresses all three gaps simultaneously: we inject verifier hidden states into the Mamba2 recurrence to bridge the large architectural gap (+88\% over unguided), introduce activation replay for $O(K)$ state resynchronization after rejection (vs.\ $O(T)$ re-prefill), and offload the entire drafter to CPU via a custom AVX-512/INT8 kernel stack that fits within the GPU verification window.

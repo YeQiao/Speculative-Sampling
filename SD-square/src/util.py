@@ -20,10 +20,11 @@ CACHE_PATH = warn_os_get("CACHE_PATH", default="./tmp")
 
 
 def load_model(model_name: str, float16=False):
-    if "llama" in model_name or "vicuna" in model_name:
+    model_name_l = model_name.lower()
+    if "llama" in model_name_l or "vicuna" in model_name_l:
         base_class = LlamaForCausalLM
         model_family = "llama"
-    elif "qwen" in model_name:
+    elif "qwen" in model_name_l:
         base_class = Qwen3ForCausalLM
         model_family = "qwen"
     else:
